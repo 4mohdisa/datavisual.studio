@@ -1,87 +1,104 @@
-# LLM Council
+# Datavisual.studio
 
-![llmcouncil](header.jpg)
+A multi-model AI research and prediction platform. Upload any dataset, ask any question, and receive a structured report where four leading AI models independently analyse your data alongside current internet research — then a chairman model synthesises a final answer.
 
-The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
+Built by Mohammed Isa (mohdisa233@gmail.com)
 
-In a bit more detail, here is what happens when you submit a query:
+## What it does
 
-1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected. The individual responses are shown in a "tab view", so that the user can inspect them all one by one.
-2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs. Under the hood, the LLM identities are anonymized so that the LLM can't play favorites when judging their outputs. The LLM is asked to rank them in accuracy and insight.
-3. **Stage 3: Final response**. The designated Chairman of the LLM Council takes all of the model's responses and compiles them into a single final answer that is presented to the user.
-
-## Vibe Code Alert
-
-This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
+- Upload CSV, Excel, or JSON datasets
+- The platform profiles your data, auto-generates interactive charts, and searches the internet for current context
+- Four AI models (via OpenRouter) analyse everything independently and review each other's reasoning
+- A chairman model produces a synthesised final answer
+- Full report with comparison tables, source citations, and a live Activity Panel showing the pipeline in real time
+- Follow-up questions answered by the chairman using the full session context
 
 ## Setup
 
-### 1. Install Dependencies
+### Requirements
+- Python 3.10+
+- Node.js 18+
+- uv (Python package manager)
+- An OpenRouter API key at openrouter.ai
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
+### Installation
 
-**Backend:**
+Backend:
 ```bash
 uv sync
+cp .env.example .env
+# Add your OPENROUTER_API_KEY to .env
 ```
 
-**Frontend:**
+Frontend:
 ```bash
 cd frontend
 npm install
-cd ..
 ```
 
-### 2. Configure API Key
+### Running
 
-Create a `.env` file in the project root:
-
-```bash
-OPENROUTER_API_KEY=sk-or-v1-...
-```
-
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
-
-### 3. Configure Models (Optional)
-
-Edit `backend/config.py` to customize the council:
-
-```python
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
-]
-
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
-```
-
-## Running the Application
-
-**Option 1: Use the start script**
-```bash
-./start.sh
-```
-
-**Option 2: Run manually**
-
-Terminal 1 (Backend):
+Terminal 1 — backend:
 ```bash
 uv run python -m backend.main
 ```
 
-Terminal 2 (Frontend):
+Terminal 2 — frontend:
 ```bash
 cd frontend
 npm run dev
 ```
 
-Then open http://localhost:5173 in your browser.
+Open http://localhost:5173
 
-## Tech Stack
+## PDF export
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
-- **Storage:** JSON files in `data/conversations/`
-- **Package Management:** uv for Python, npm for JavaScript
+PDF export requires WeasyPrint system libraries.
+- macOS:  `brew install pango cairo`
+- Linux:  `apt-get install libpango-1.0-0 libcairo2`
+
+Without these, export falls back to HTML automatically.
+
+## Tech stack
+
+- **Backend:** FastAPI, Python 3.10+, pandas, Plotly, WeasyPrint, OpenRouter API
+- **Frontend:** React, Vite, Tailwind CSS, react-plotly.js
+
+---
+
+## 🔬 How Predictions Work — Example
+
+**Upload:** `elo_ratings_wc2026.csv` (4,683 rows, 23 columns)
+**Question:** *"Which team has the highest probability of winning the 2026 FIFA World Cup?"*
+
+**Pipeline:**
+1. pandas detects ELO rating column + country entity column + snapshot_date time column
+2. Form index computed from wins/losses/draws weighted toward recent periods
+3. Model A runs 10,000 bracket simulations → Spain 27.4%
+4. Model B runs 10,000 Poisson simulations with Dixon-Coles → Spain 31.7%
+5. Ensemble average → Spain 29.6%
+6. Perplexity searches live results, odds, expert forecasts → extracts percentage values
+7. All four council models receive dataset + predictions + research
+8. Peer review weights model responses by ranking
+9. Final: `(29.6% × 0.40) + (internet% × 0.35) + (council% × 0.25)` = final range
+10. Chairman explains the numbers, cannot change them
+
+---
+
+## ⚙️ Environment Variables
+
+```env
+OPENROUTER_API_KEY=sk-or-v1-...     # Required
+DATAVISUAL_DEBUG=false              # Optional: enable debug logging
+CRON_SECRET=...                     # Optional: for future cron jobs
+```
+
+---
+
+## 📄 License
+
+MIT © [Mohammed Isa](https://github.com/4mohdisa)
+
+---
+
+*Built on top of [karpathy/llm-council](https://github.com/karpathy/llm-council) — extended with data analysis, internet research, a deterministic prediction engine, and a full React frontend.*

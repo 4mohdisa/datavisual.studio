@@ -1,21 +1,15 @@
 import ReactMarkdown from 'react-markdown';
-import './Stage3.css';
 
 export default function Stage3({ finalResponse }) {
-  if (!finalResponse) {
-    return null;
-  }
+  if (!finalResponse) return null;
 
   return (
-    <div className="stage stage3">
-      <h3 className="stage-title">Stage 3: Final Council Answer</h3>
-      <div className="final-response">
-        <div className="chairman-label">
-          Chairman: {finalResponse.model.split('/')[1] || finalResponse.model}
-        </div>
-        <div className="final-text markdown-content">
-          <ReactMarkdown>{finalResponse.response}</ReactMarkdown>
-        </div>
+    <div className="flex flex-col gap-2">
+      <div className="text-xs text-[var(--muted)] italic">
+        Chairman: {finalResponse.model.split('/')[1] || finalResponse.model}
+      </div>
+      <div className="markdown-content text-[oklch(0.85_0_0)] leading-relaxed">
+        <ReactMarkdown>{finalResponse.response}</ReactMarkdown>
       </div>
     </div>
   );

@@ -1,17 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+
+  /* oklch dark palette (referenced via Tailwind arbitrary values, e.g. bg-[var(--background)]) */
+  --background: oklch(0.12 0 0);     /* main chat + sidebar surface */
+  --surface-input: oklch(0.17 0 0);  /* floating input bar */
+  --user-bubble: oklch(0.20 0 0);    /* user message bubble */
+  --active: oklch(0.18 0 0);         /* active conversation highlight */
+  --raised: oklch(0.16 0 0);         /* subtle raised panels (progress, aggregate) */
+  --border: oklch(0.22 0 0);         /* sidebar/chat separator + section dividers */
+  --border-2: oklch(0.25 0 0);       /* input bar + stronger borders */
+  --border-3: oklch(0.30 0 0);       /* control borders */
+  --text: oklch(0.92 0 0);           /* primary text */
+  --muted: oklch(0.65 0 0);          /* secondary text */
+  --faint: oklch(0.45 0 0);          /* tertiary text / disabled */
+  --accent: #4a90e2;
+  --danger: #e05555;
+  --new-chat: oklch(0.98 0 0);
+  --new-chat-hover: oklch(0.88 0 0);
 }
 
 * {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
@@ -19,7 +37,10 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background: #f5f5f5;
+  background: var(--background);
+  color: var(--text);
+  /* Base body text for the chat is 14px; markdown headings use em so they scale. */
+  font-size: 14px;
 }
 
 #root {
@@ -28,71 +49,62 @@ body {
   overflow: hidden;
 }
 
-/* Global markdown styling */
+/* ---------------------------------------------------------------------------
+   Markdown styling — kept as CSS because ReactMarkdown emits raw tags that
+   can't carry inline utility classes, and Tailwind's preflight would otherwise
+   strip heading sizes and list bullets.
+--------------------------------------------------------------------------- */
 .markdown-content {
-  padding: 12px;
+  padding: 0;
+  color: var(--text);
+  line-height: 1.7;
 }
-
-.markdown-content p {
-  margin: 0 0 12px 0;
-}
-
-.markdown-content p:last-child {
-  margin-bottom: 0;
-}
-
-.markdown-content h1,
-.markdown-content h2,
-.markdown-content h3,
+.markdown-content p { margin: 0 0 12px 0; }
+.markdown-content p:last-child { margin-bottom: 0; }
+.markdown-content h1 { font-size: 1.6em; font-weight: 700; margin: 16px 0 8px; }
+.markdown-content h2 { font-size: 1.35em; font-weight: 700; margin: 16px 0 8px; }
+.markdown-content h3 { font-size: 1.15em; font-weight: 600; margin: 14px 0 6px; }
 .markdown-content h4,
 .markdown-content h5,
-.markdown-content h6 {
-  margin: 16px 0 8px 0;
-}
-
+.markdown-content h6 { font-size: 1em; font-weight: 600; margin: 12px 0 6px; }
 .markdown-content h1:first-child,
 .markdown-content h2:first-child,
-.markdown-content h3:first-child,
-.markdown-content h4:first-child,
-.markdown-content h5:first-child,
-.markdown-content h6:first-child {
-  margin-top: 0;
-}
-
-.markdown-content ul,
-.markdown-content ol {
-  margin: 0 0 12px 0;
-  padding-left: 24px;
-}
-
-.markdown-content li {
-  margin: 4px 0;
-}
-
+.markdown-content h3:first-child { margin-top: 0; }
+.markdown-content ul { list-style: disc; margin: 0 0 12px; padding-left: 24px; }
+.markdown-content ol { list-style: decimal; margin: 0 0 12px; padding-left: 24px; }
+.markdown-content li { margin: 4px 0; }
+.markdown-content strong { font-weight: 700; }
+.markdown-content a { color: var(--accent); text-decoration: none; }
+.markdown-content a:hover { text-decoration: underline; }
 .markdown-content pre {
-  background: #f5f5f5;
+  background: var(--raised);
   padding: 12px;
   border-radius: 4px;
   overflow-x: auto;
   margin: 0 0 12px 0;
 }
-
 .markdown-content code {
-  background: #f5f5f5;
+  background: var(--raised);
   padding: 2px 6px;
   border-radius: 3px;
   font-family: monospace;
   font-size: 0.9em;
 }
-
-.markdown-content pre code {
-  background: none;
-  padding: 0;
-}
-
+.markdown-content pre code { background: none; padding: 0; }
 .markdown-content blockquote {
   margin: 0 0 12px 0;
   padding-left: 16px;
-  border-left: 4px solid #ddd;
-  color: #666;
+  border-left: 4px solid var(--border-2);
+  color: var(--muted);
 }
+.markdown-content table { border-collapse: collapse; margin: 0 0 12px; width: 100%; }
+.markdown-content th,
+.markdown-content td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+
+/* Spinner used by the staged progress + buttons */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes ap-fade-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Smooth appearance for chat messages and report content */
+@keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.animate-msg-in { animation: msg-in 0.35s ease-out both; }

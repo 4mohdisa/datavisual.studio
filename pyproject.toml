@@ -1,7 +1,8 @@
 [project]
-name = "llm-council"
-version = "0.1.0"
-description = "Your LLM Council"
+name = "datavisual-studio-backend"
+version = "1.0.0"
+description = "Datavisual.studio backend — FastAPI council pipeline with data analysis"
+authors = [{name = "Mohammed Isa", email = "mohdisa233@gmail.com"}]
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -10,4 +11,12 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "httpx>=0.27.0",
     "pydantic>=2.9.0",
+    "pandas>=2.3.3",
+    "openpyxl>=3.1.5",
+    "plotly>=6.8.0",
+    "python-multipart>=0.0.32",
+    "weasyprint>=69.0",
+    "scipy>=1.15.3",
+    "xgboost>=3.2.0",
+    "scikit-learn>=1.7.2",
 ]

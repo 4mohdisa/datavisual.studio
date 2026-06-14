@@ -1,8 +1,58 @@
-"""3-stage LLM Council orchestration."""
+"""3-stage AI council orchestration."""
 
-from typing import List, Dict, Any, Tuple
+import asyncio
+from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, DEBUG
+
+# Per-model timeout for council queries. If a model is slow or hangs we log it and
+# continue with whatever did respond — one model must never block the council.
+COUNCIL_TIMEOUT = 30.0
+
+
+async def _query_council_model(
+    model: str,
+    messages: List[Dict[str, str]],
+    timeout: float = COUNCIL_TIMEOUT,
+) -> Optional[Dict[str, Any]]:
+    """Query one council model with explicit per-model logging and a timeout.
+
+    Returns the response dict on success, or None on failure/timeout/empty —
+    callers filter Nones out so the council proceeds with the survivors.
+    """
+    if DEBUG:
+        print(f"[COUNCIL] Querying {model}...", flush=True)
+    try:
+        response = await query_model(model, messages, timeout=timeout)
+    except Exception as e:
+        if DEBUG:
+            print(f"[COUNCIL] {model} FAILED: {e}", flush=True)
+        return None
+
+    if response is None:
+        # query_model already printed the underlying HTTP error.
+        if DEBUG:
+            print(f"[COUNCIL] {model} FAILED: no response (request error or timeout)", flush=True)
+        return None
+
+    content = response.get("content") or ""
+    if not content.strip():
+        if DEBUG:
+            print(f"[COUNCIL] {model} FAILED: empty content", flush=True)
+        return None
+
+    if DEBUG:
+        print(f"[COUNCIL] {model} responded: {len(content)} chars", flush=True)
+    return response
+
+
+async def _query_council_parallel(
+    messages: List[Dict[str, str]],
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Query every council model in parallel, each with logging + timeout."""
+    tasks = [_query_council_model(model, messages) for model in COUNCIL_MODELS]
+    results = await asyncio.gather(*tasks)
+    return {model: result for model, result in zip(COUNCIL_MODELS, results)}
 
 
 async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
@@ -17,8 +67,8 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     """
     messages = [{"role": "user", "content": user_query}]
 
-    # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    # Query all models in parallel (logged, with per-model timeout)
+    responses = await _query_council_parallel(messages)
 
     # Format results
     stage1_results = []
@@ -29,6 +79,11 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
                 "response": response.get('content', '')
             })
 
+    if DEBUG:
+        print(
+            f"[COUNCIL] Stage 1 complete: {len(stage1_results)}/{len(COUNCIL_MODELS)} models responded",
+            flush=True,
+        )
     return stage1_results
 
 
@@ -94,15 +149,29 @@ Now provide your evaluation and ranking:"""
 
     messages = [{"role": "user", "content": ranking_prompt}]
 
-    # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    # Get rankings from all council models in parallel (logged, with timeout)
+    responses = await _query_council_parallel(messages)
+
+    # The full set of labels in their original (default) order. Used as a safe
+    # fallback ranking when a model returns an unparseable response.
+    all_labels = [f"Response {label}" for label in labels]
 
     # Format results
     stage2_results = []
     for model, response in responses.items():
         if response is not None:
-            full_text = response.get('content', '')
+            full_text = response.get('content') or ''
             parsed = parse_ranking_from_text(full_text)
+            if not parsed:
+                # Defensive: the model didn't follow the format. Don't crash the
+                # pipeline — log the raw response and assign an equal/default
+                # ranking (all responses in original order) so Stage 3 still runs.
+                print(
+                    f"[council] Stage 2 ranking unparseable from {model}; "
+                    f"assigning default equal ranking. Raw response:\n{full_text[:500]}",
+                    flush=True,
+                )
+                parsed = list(all_labels)
             stage2_results.append({
                 "model": model,
                 "ranking": full_text,
@@ -115,7 +184,8 @@ Now provide your evaluation and ranking:"""
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    prediction_context: str = "",
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -124,6 +194,10 @@ async def stage3_synthesize_final(
         user_query: The original user query
         stage1_results: Individual model responses from Stage 1
         stage2_results: Rankings from Stage 2
+        prediction_context: Optional system instruction carrying the deterministic
+            prediction table. When provided it is prepended as a system message so
+            the chairman writes the synthesis around the algorithm's numbers rather
+            than inventing its own.
 
     Returns:
         Dict with 'model' and 'response' keys
@@ -139,7 +213,7 @@ async def stage3_synthesize_final(
         for result in stage2_results
     ])
 
-    chairman_prompt = f"""You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
+    chairman_prompt = f"""You are the Chairman of an AI council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
 
 Original Question: {user_query}
 
@@ -157,6 +231,8 @@ Your task as Chairman is to synthesize all of this information into a single, co
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
+    if prediction_context:
+        messages = [{"role": "system", "content": prediction_context}] + messages
 
     # Query the chairman model
     response = await query_model(CHAIRMAN_MODEL, messages)
@@ -228,10 +304,12 @@ def calculate_aggregate_rankings(
     model_positions = defaultdict(list)
 
     for ranking in stage2_results:
-        ranking_text = ranking['ranking']
-
-        # Parse the ranking from the structured format
-        parsed_ranking = parse_ranking_from_text(ranking_text)
+        # Prefer the parsed_ranking already computed in stage2_collect_rankings
+        # (which includes the equal-ranking fallback for unparseable responses);
+        # only re-parse if it's somehow missing.
+        parsed_ranking = ranking.get('parsed_ranking')
+        if not parsed_ranking:
+            parsed_ranking = parse_ranking_from_text(ranking.get('ranking', ''))
 
         for position, label in enumerate(parsed_ranking, start=1):
             if label in label_to_model:

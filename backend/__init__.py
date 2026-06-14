@@ -1,1 +1,1 @@
-"""LLM Council backend package."""
+"""Datavisual.studio backend package."""

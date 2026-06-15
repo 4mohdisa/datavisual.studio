@@ -1,6 +1,7 @@
 """PDF export using WeasyPrint."""
 
 import asyncio
+import os
 
 # WeasyPrint depends on native libraries (Pango, Cairo). If those are missing the
 # import itself raises (often OSError). Capture that here so importing this module
@@ -55,18 +56,21 @@ def pdf_available() -> bool:
     return HTML is not None
 
 
-async def export_report(conversation: dict, base_path_no_ext: str) -> dict:
+async def export_report(conversation: dict, base_path_no_ext: str, force_html: bool = False,
+                        mode: str | None = None) -> dict:
     """Produce a downloadable report file.
 
-    Option A (preferred): render a PDF with WeasyPrint. Option B (automatic
-    fallback): if WeasyPrint is unavailable or rendering fails, write a
-    self-contained dark-theme HTML file instead — the user still gets their
-    report rather than an error. Returns {path, media_type, extension, kind}.
+    `mode="dashboard"` renders the visual dashboard layout (4.7). Otherwise: a PDF
+    via WeasyPrint, falling back (or when `force_html`) to a self-contained HTML.
+    Returns {path, media_type, extension, kind}.
     """
-    if HTML is not None:
+    builder = _build_dashboard_html if mode == "dashboard" else _build_html
+    fallback_builder = _build_dashboard_html if mode == "dashboard" else _build_html_export
+
+    if HTML is not None and not force_html:
         pdf_path = base_path_no_ext + ".pdf"
         try:
-            html = _build_html(conversation)
+            html = builder(conversation)
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: HTML(string=html).write_pdf(pdf_path)
             )
@@ -74,12 +78,81 @@ async def export_report(conversation: dict, base_path_no_ext: str) -> dict:
         except Exception as e:
             print(f"[export] PDF generation failed, falling back to HTML: {e}", flush=True)
 
-    # Option B — self-contained HTML fallback
+    # Self-contained HTML fallback
     html_path = base_path_no_ext + ".html"
-    html = _build_html_export(conversation)
+    html = fallback_builder(conversation)
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
     return {"path": html_path, "media_type": "text/html", "extension": "html", "kind": "html"}
+
+
+def _build_dashboard_html(conversation: dict) -> str:
+    """Visual dashboard export (4.7): metrics strip, all charts, and a data sample.
+    More visual, less text than the report export."""
+    title = conversation.get("title", "Dashboard")
+    pipeline = conversation.get("pipeline", {})
+    summary = pipeline.get("data_summary", {}) or {}
+    charts = pipeline.get("charts", []) or pipeline.get("report", {}).get("sections", {}).get("visualisations", {}).get("charts", [])
+    stats = summary.get("statistics", {})
+
+    # Metrics: pick an ELO/rating-like column, else the first numeric.
+    import re as _re
+    names = list(stats.keys())
+    metric_cards = []
+    if names:
+        primary = next((n for n in names if _re.search(r"elo|rating|points|score", n, _re.I)), names[0])
+        p = stats[primary]
+        metric_cards = [
+            ("Highest " + primary, p.get("max")),
+            ("Lowest " + primary, p.get("min")),
+            ("Mean " + primary, p.get("mean")),
+            (primary + " range", (p.get("max") - p.get("min")) if p.get("max") is not None and p.get("min") is not None else "–"),
+        ]
+
+    parts = [
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        f"<title>{_esc(title)}</title><style>{_DARK_EXPORT_CSS}"
+        ".metrics{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}"
+        ".metric{flex:1;min-width:150px;background:#161616;border:1px solid #2a2a2a;border-radius:8px;padding:14px}"
+        ".metric .l{font-size:11px;color:#9bb0cc;text-transform:uppercase}"
+        ".metric .v{font-size:22px;font-weight:700;color:#fff;margin-top:4px}"
+        "</style></head><body>"
+        f"<h1>{_esc(title)} — Dashboard</h1>"
+        f"<p class='muted'>{summary.get('row_count', '–')} rows · {summary.get('column_count', '–')} columns</p>"
+    ]
+
+    if metric_cards:
+        parts.append('<div class="metrics">')
+        for label, val in metric_cards:
+            vs = f"{val:,}" if isinstance(val, (int, float)) else _esc(str(val))
+            parts.append(f'<div class="metric"><div class="l">{_esc(label)}</div><div class="v">{vs}</div></div>')
+        parts.append("</div>")
+
+    parts.append('<div class="section"><h2>Charts</h2>')
+    if charts and _kaleido_available():
+        for c in charts:
+            html = _chart_png_html(c)
+            if html:
+                parts.append(html)
+    else:
+        parts.append('<p class="muted">Charts available in the interactive web dashboard.</p>')
+    parts.append("</div>")
+
+    # Data sample table.
+    file_info = conversation.get("file") or {}
+    path = file_info.get("path")
+    if path and os.path.exists(path):
+        try:
+            from .data_analysis import _load
+            df = _load(path).head(50)
+            parts.append('<div class="section"><h2>Data sample (first 50 rows)</h2>')
+            parts.append(_html_table_from_rows(df.to_dict(orient="records")))
+            parts.append("</div>")
+        except Exception:
+            pass
+
+    parts.append("</body></html>")
+    return "".join(parts)
 
 
 def _build_html(conversation: dict) -> str:

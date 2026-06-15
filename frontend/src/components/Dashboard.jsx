@@ -42,7 +42,7 @@ function buildMetrics(summary) {
 // ---------------------------------------------------------------------------
 // 4.4 — Chart area (grid + tab pills)
 // ---------------------------------------------------------------------------
-function ChartArea({ charts }) {
+function ChartArea({ charts, onGenerate, generating, canGenerate }) {
   const [tab, setTab] = useState('all');
   if (!charts || charts.length === 0) {
     return <div className="text-[var(--muted)] text-sm">No charts available.</div>;
@@ -65,7 +65,7 @@ function ChartArea({ charts }) {
   const shown = tab === 'all' ? charts : charts.filter((_, i) => String(i) === tab);
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         {[['all', 'All'], ...charts.map((c, i) => [String(i), c.title])].map(([id, label]) => (
           <button
             key={id}
@@ -75,6 +75,15 @@ function ChartArea({ charts }) {
             {label}
           </button>
         ))}
+        {onGenerate && canGenerate && (
+          <button
+            onClick={onGenerate}
+            disabled={generating}
+            className="ml-auto px-2.5 py-1 rounded-full text-xs border border-[var(--border-2)] text-[var(--muted)] hover:text-[var(--text)] transition disabled:opacity-50"
+          >
+            {generating ? 'Generating…' : '+ Generate more charts'}
+          </button>
+        )}
       </div>
       <div className={tab === 'all' ? 'grid grid-cols-1 xl:grid-cols-2 gap-3' : ''}>
         {shown.map(render)}
@@ -296,8 +305,22 @@ export default function Dashboard() {
 
   const pipeline = conv?.pipeline || {};
   const summary = pipeline.data_summary;
-  const charts = pipeline.charts || pipeline.report?.sections?.visualisations?.charts || [];
+  const baseCharts = pipeline.charts || pipeline.report?.sections?.visualisations?.charts || [];
   const metrics = useMemo(() => buildMetrics(summary), [summary]);
+  const [extraCharts, setExtraCharts] = useState([]);
+  const [generating, setGenerating] = useState(false);
+
+  const generateMore = async () => {
+    setGenerating(true);
+    try {
+      const r = await api.getExtraCharts(id);
+      setExtraCharts(r.charts || []);
+    } catch {
+      /* ignore */
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   if (error) {
     return (
@@ -325,11 +348,19 @@ export default function Dashboard() {
             <ArrowLeft size={18} strokeWidth={1.5} /> Back
           </button>
           <h1 className="text-[20px] font-semibold">{conv.title || 'Dataset dashboard'}</h1>
-          {summary && (
-            <span className="text-[12px] text-[var(--muted)] ml-auto">
-              {summary.row_count?.toLocaleString()} rows · {summary.column_count} columns
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-3">
+            {summary && (
+              <span className="text-[12px] text-[var(--muted)]">
+                {summary.row_count?.toLocaleString()} rows · {summary.column_count} columns
+              </span>
+            )}
+            <button
+              onClick={() => api.exportReport(id, null, 'dashboard').catch(() => {})}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--border-2)] text-[13px] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--active)] transition"
+            >
+              <Download size={14} strokeWidth={1.5} /> Export Dashboard
+            </button>
+          </div>
         </div>
 
         {/* Metrics strip */}
@@ -340,7 +371,12 @@ export default function Dashboard() {
         )}
 
         {/* Charts */}
-        <ChartArea charts={charts} />
+        <ChartArea
+          charts={[...baseCharts, ...extraCharts]}
+          onGenerate={generateMore}
+          generating={generating}
+          canGenerate={extraCharts.length === 0}
+        />
 
         {/* Entity comparison + data table (need raw rows) */}
         {dataset?.rows?.length > 0 ? (

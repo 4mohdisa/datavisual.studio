@@ -155,6 +155,15 @@ export const api = {
   },
 
   /**
+   * Generate additional dashboard chart types (4.4).
+   */
+  async getExtraCharts(conversationId) {
+    const response = await fetch(`${API_BASE}/api/extra-charts/${conversationId}`, { method: 'POST' });
+    if (!response.ok) throw new Error('Failed to generate charts');
+    return response.json();
+  },
+
+  /**
    * Re-run data analysis on a filtered dataset.
    */
   async reanalyse(conversationId, filters) {
@@ -189,8 +198,12 @@ export const api = {
    * self-contained HTML file — we pick the extension from the response type and
    * honour the server's Content-Disposition filename when present.
    */
-  async exportReport(conversationId) {
-    const response = await fetch(`${API_BASE}/api/export/${conversationId}`);
+  async exportReport(conversationId, format, mode) {
+    const params = new URLSearchParams();
+    if (format) params.set('format', format);
+    if (mode) params.set('mode', mode);
+    const qs = params.toString() ? `?${params}` : '';
+    const response = await fetch(`${API_BASE}/api/export/${conversationId}${qs}`);
     if (!response.ok) {
       // Surface the backend's actionable message (e.g. missing Pango/Cairo).
       let detail = 'Export failed';

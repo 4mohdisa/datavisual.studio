@@ -13,10 +13,17 @@ export default function CombinedPrediction({ suite, meta = {} }) {
   if (rows.length === 0) return null;
   const host = meta.host_entity || null;
 
+  const computedAt = meta.computed_at
+    ? new Date(meta.computed_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : null;
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="text-[12px] text-[var(--muted)]">
-        Dataset ensemble 40% · Internet research 35% · AI council 25%
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-[12px] text-[var(--muted)]">
+          Dataset ensemble 40% · Internet research 35% · AI council 25%
+        </div>
+        {computedAt && <div className="text-[12px] text-[var(--faint)]">Computed at {computedAt}</div>}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-[13px] border border-[var(--border-2)]">

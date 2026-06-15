@@ -879,6 +879,7 @@ async def analyse(request: AnalyseRequest):
                     "host_boost": dataset_models.get("host_boost", 0),
                     "stability_note": dataset_models.get("stability_note"),
                     "n_simulations_used": dataset_models.get("n_simulations_used", _N_SIMULATIONS),
+                    "computed_at": datetime.utcnow().isoformat() + "Z",
                 }
 
                 if prediction_table:
@@ -1099,6 +1100,27 @@ async def reanalyse(request: ReanalyseRequest):
     return response
 
 
+@app.post("/api/extra-charts/{conversation_id}")
+async def extra_charts(conversation_id: str):
+    """Generate additional chart types (box plots, scatter matrix, correlation
+    heatmap, animated bubble) for the dashboard (4.4). Returns {charts}."""
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    file_info = conversation.get("file")
+    if not file_info or not file_info.get("path") or not os.path.exists(file_info["path"]):
+        raise HTTPException(status_code=404, detail="No dataset file for this conversation")
+
+    from .data_analysis import _load, build_extra_charts, _col_type
+    try:
+        df = _load(file_info["path"])
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not read dataset: {e}")
+
+    columns_info = [{"name": c, "type": _col_type(df[c])} for c in df.columns]
+    return {"charts": build_extra_charts(df, columns_info)}
+
+
 @app.get("/api/export-format")
 async def export_format():
     """Report which export format the server can produce so the UI can label the
@@ -1108,18 +1130,21 @@ async def export_format():
 
 
 @app.get("/api/export/{conversation_id}")
-async def export_report_endpoint(conversation_id: str):
+async def export_report_endpoint(conversation_id: str, format: Optional[str] = None, mode: Optional[str] = None):
     """Generate and return the stored report as a PDF, or an HTML file when the
-    PDF toolchain (WeasyPrint/Pango/Cairo) is unavailable."""
+    PDF toolchain (WeasyPrint/Pango/Cairo) is unavailable.
+
+    Pass ?format=html for a shareable HTML snapshot (6.3), or ?mode=dashboard for
+    the more-visual dashboard export — metrics, charts and data table (4.7)."""
     from .pdf_export import export_report
 
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    base = os.path.join(EXPORTS_DIR, conversation_id)
+    base = os.path.join(EXPORTS_DIR, conversation_id + ("-dashboard" if mode == "dashboard" else ""))
     try:
-        result = await export_report(conversation, base)
+        result = await export_report(conversation, base, force_html=(format == "html"), mode=mode)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {e}")
 

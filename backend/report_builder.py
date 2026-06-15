@@ -112,6 +112,15 @@ def build_enriched_prompt(
     if baseline_block:
         parts.append(baseline_block)
 
+    # Anomaly note (6.5) — flag entities with anomalous values for the council.
+    if data_summary and data_summary.get("anomalies"):
+        anoms = data_summary["anomalies"][:8]
+        listed = ", ".join(f"{a['entity']} ({a['column']}={a['value']})" for a in anoms)
+        parts.append(
+            "ANOMALIES DETECTED — the following entities have anomalous values that "
+            f"may affect predictions: {listed}"
+        )
+
     # Event-status check (Fix 2) — placed immediately after the dataset context so
     # the council can't claim the event "hasn't started" when sources prove it has.
     if event_status:
@@ -508,6 +517,9 @@ def build_report(
         "sources": internet_findings.get("sources", []) if internet_available else [],
         "searches": internet_findings.get("searches", []) if internet_available else [],
         "as_of": internet_findings.get("as_of", "") if internet_findings else "",
+        # Phase 3: live results (3.4) + research summary digest (3.5).
+        "live_scores": internet_findings.get("live_scores", []) if internet_findings else [],
+        "summary": internet_findings.get("summary", {}) if internet_findings else {},
         "internet_vs_council_table": internet_vs_council,
     }
 

@@ -1,23 +1,33 @@
-import { CheckCircle2, Loader2, Circle } from 'lucide-react';
+// Vertical timeline: a line down the left, a circle node per stage, label on the
+// right. Active node pulses; completed nodes are filled (1.4).
 
-function Icon({ status }) {
-  if (status === 'done') return <CheckCircle2 size={14} strokeWidth={1.5} className="shrink-0 text-[#4ad07f]" />;
-  if (status === 'active') return <Loader2 size={16} strokeWidth={1.5} className="shrink-0 text-[var(--accent)] animate-spin" />;
-  return <Circle size={16} strokeWidth={1.5} className="shrink-0 text-[var(--faint)]" />;
-}
-
-function Line({ status, label, indent }) {
+function Node({ status, label, last }) {
   if (!status || status === 'skipped') return null;
-  const color =
-    status === 'active'
-      ? 'text-[var(--text)] animate-[ap-fade-in_0.35s_ease]'
-      : status === 'done'
-      ? 'text-[var(--muted)]'
-      : 'text-[var(--faint)]';
+  const isDone = status === 'done';
+  const isActive = status === 'active';
+
+  const circle = isDone
+    ? 'bg-[#4ad07f] border-[#4ad07f]'
+    : isActive
+    ? 'bg-[var(--accent)] border-[var(--accent)] animate-pulse'
+    : 'bg-transparent border-[var(--faint)]';
+
+  const text = isActive
+    ? 'text-[var(--text)]'
+    : isDone
+    ? 'text-[var(--muted)]'
+    : 'text-[var(--faint)]';
+
   return (
-    <div className={`flex items-center gap-2.5 transition-colors ${color} ${indent ? 'pl-[26px] text-[13px]' : 'text-sm'}`}>
-      <Icon status={status} />
-      <span>{label}</span>
+    <div className="flex gap-3">
+      {/* left rail: connector line + node */}
+      <div className="relative flex flex-col items-center">
+        <span className={`mt-0.5 w-3 h-3 rounded-full border-2 shrink-0 ${circle}`} />
+        {!last && <span className="w-px flex-1 bg-[var(--border-2)] my-1" />}
+      </div>
+      <div className={`text-[14px] pb-3 ${text} ${isActive ? 'animate-[ap-fade-in_0.35s_ease]' : ''}`}>
+        {label}
+      </div>
     </div>
   );
 }
@@ -27,8 +37,8 @@ export default function AnalysisProgress({ progress }) {
 
   if (progress.followup) {
     return (
-      <div className="flex flex-col gap-2.5 max-w-[460px]">
-        <Line status={progress.followup} label="Consulting the chairman…" />
+      <div className="flex flex-col max-w-[460px]">
+        <Node status={progress.followup} label="Consulting the chairman…" last />
       </div>
     );
   }
@@ -41,15 +51,22 @@ export default function AnalysisProgress({ progress }) {
     council = 'active';
   }
 
+  // Build the node list, dropping skipped stages so `last` lands on the real tail.
+  const nodes = [
+    { status: analysis, label: 'Analysing dataset' },
+    { status: research, label: 'Searching the web' },
+    { status: council, label: 'Consulting the council' },
+    { status: stage1, label: 'Stage 1 — Individual responses' },
+    { status: stage2, label: 'Stage 2 — Peer review' },
+    { status: stage3, label: 'Stage 3 — Chairman synthesis' },
+    { status: report, label: 'Building report' },
+  ].filter((n) => n.status && n.status !== 'skipped');
+
   return (
-    <div className="flex flex-col gap-2.5 max-w-[460px]">
-      <Line status={analysis} label="Analysing dataset…" />
-      <Line status={research} label="Searching the web…" />
-      <Line status={council} label="Consulting the council…" />
-      <Line status={stage1} label="Stage 1 — Individual responses" indent />
-      <Line status={stage2} label="Stage 2 — Peer review" indent />
-      <Line status={stage3} label="Stage 3 — Chairman synthesis" indent />
-      <Line status={report} label="Building report…" />
+    <div className="flex flex-col max-w-[460px]">
+      {nodes.map((n, i) => (
+        <Node key={n.label} status={n.status} label={n.label} last={i === nodes.length - 1} />
+      ))}
     </div>
   );
 }

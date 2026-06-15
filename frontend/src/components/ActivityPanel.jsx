@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { X, BarChart3, TrendingUp, CheckCircle2, AlertCircle } from 'lucide-react';
+import { X, BarChart3, TrendingUp, CheckCircle2, AlertCircle, Copy, Home } from 'lucide-react';
 
 const TITLE = {
   dataset_analysed: 'Analysing the dataset',
@@ -9,6 +9,8 @@ const TITLE = {
   peer_review_started: 'Peer review',
   model_b_calibrated: 'Dixon-Coles calibrated',
   form_index_computed: 'Form index applied',
+  host_advantage: 'Host advantage applied',
+  prediction_validated: 'Prediction validated',
   model_c_trained: 'XGBoost trained',
   model_c_skipped: 'XGBoost skipped',
   predictions_computed: 'Computing predictions',
@@ -22,6 +24,8 @@ const TITLE = {
 const ICON = {
   model_b_calibrated: BarChart3,
   form_index_computed: TrendingUp,
+  host_advantage: Home,
+  prediction_validated: CheckCircle2,
   model_c_trained: CheckCircle2,
   model_c_skipped: AlertCircle,
 };
@@ -59,6 +63,8 @@ export default function ActivityPanel({ log, open, onClose }) {
     }
   }, [log, tab, open]);
 
+  const [copied, setCopied] = useState(false);
+
   const sources = useMemo(() => {
     const seen = new Set();
     const out = [];
@@ -74,6 +80,27 @@ export default function ActivityPanel({ log, open, onClose }) {
     }
     return out;
   }, [log]);
+
+  // Group deduplicated sources by domain (1.5).
+  const sourceGroups = useMemo(() => {
+    const byDomain = {};
+    for (const s of sources) {
+      const d = domainOf(s.url);
+      (byDomain[d] ||= []).push(s);
+    }
+    return Object.entries(byDomain).sort((a, b) => b[1].length - a[1].length);
+  }, [sources]);
+
+  const copyAllSources = async () => {
+    const text = sources.map((s) => `${s.title || s.url}\n${s.url}`).join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
 
   const tabPill = (id, label) => (
     <button
@@ -122,7 +149,11 @@ export default function ActivityPanel({ log, open, onClose }) {
               const description = item.reasoning || item.detail;
               const Icon = ICON[item.event];
               return (
-                <div key={i} className="flex gap-2 pl-3 border-l-2 border-[oklch(0.28_0_0)]">
+                <div
+                  key={i}
+                  className="flex gap-2 pl-3 border-l-2 border-[oklch(0.28_0_0)] animate-act-in"
+                  style={{ animationDelay: `${Math.min(i, 12) * 60}ms` }}
+                >
                   {Icon ? (
                     <Icon size={14} strokeWidth={1.5} className={`mt-0.5 shrink-0 ${ICON_AMBER.has(item.event) ? 'text-amber-400' : 'text-[var(--muted)]'}`} />
                   ) : (
@@ -145,25 +176,41 @@ export default function ActivityPanel({ log, open, onClose }) {
         </div>
       )}
 
-      {/* Sources tab (unchanged list style) */}
+      {/* Sources tab — grouped by domain with a copy-all action (1.5) */}
       {tab === 'sources' && (
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {sources.length === 0 ? (
             <div className="text-[var(--faint)] text-sm">No web sources — text-only mode</div>
           ) : (
-            sources.map((s, i) => (
-              <div key={i} className="py-2.5 border-b border-[var(--border)] last:border-b-0">
-                <a
-                  href={s.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[13px] text-[oklch(0.75_0_0)] no-underline hover:text-white hover:underline"
-                >
-                  {s.title || s.url}
-                </a>
-                <div className="text-[11px] text-[var(--faint)] mt-0.5">{domainOf(s.url)}</div>
-              </div>
-            ))
+            <>
+              <button
+                onClick={copyAllSources}
+                className="w-full flex items-center justify-center gap-2 mb-3 px-3 py-1.5 rounded-md border border-[var(--border-2)] text-[12px] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--user-bubble)] transition"
+              >
+                <Copy size={13} strokeWidth={1.5} />
+                {copied ? 'Copied!' : `Copy all sources (${sources.length})`}
+              </button>
+              {sourceGroups.map(([domain, items], gi) => (
+                <div key={domain} className="mb-3 animate-act-in" style={{ animationDelay: `${Math.min(gi, 10) * 60}ms` }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[12px] font-medium text-[var(--text)]">{domain}</span>
+                    <span className="text-[10px] text-[var(--faint)] bg-[var(--user-bubble)] rounded-full px-1.5 py-0.5">{items.length}</span>
+                  </div>
+                  {items.map((s, i) => (
+                    <div key={i} className="py-1.5 pl-2 border-l border-[var(--border)]">
+                      <a
+                        href={s.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[13px] text-[oklch(0.75_0_0)] no-underline hover:text-white hover:underline"
+                      >
+                        {s.title || s.url}
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </>
           )}
         </div>
       )}

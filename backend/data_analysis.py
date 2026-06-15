@@ -449,6 +449,38 @@ def build_data_excerpt(df: pd.DataFrame, columns_info: list[dict], statistics: d
         return ""
 
 
+def _detect_anomalies(df, columns_info, numeric_cols, max_per_col: int = 5, max_total: int = 20) -> list[dict]:
+    """Flag rows whose numeric value sits > 3 IQR from the column median (6.5).
+    Returns [{entity, column, value}] tagged with an entity name when available."""
+    cat_cols = [c["name"] for c in columns_info if c["type"] == "categorical"]
+    entity_col = _pick_entity_column(df, cat_cols) if cat_cols else None
+    out: list[dict] = []
+    for col in numeric_cols:
+        series = df[col].dropna()
+        if len(series) <= 10:
+            continue
+        q1, q3 = series.quantile(0.25), series.quantile(0.75)
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        med = series.median()
+        mask = (df[col] - med).abs() > 3 * iqr
+        flagged = df[mask]
+        for _, row in flagged.head(max_per_col).iterrows():
+            try:
+                val = float(row[col])
+            except (TypeError, ValueError):
+                continue
+            out.append({
+                "entity": str(row[entity_col]) if entity_col and entity_col in df.columns else f"row {row.name}",
+                "column": col,
+                "value": round(val, 2),
+            })
+            if len(out) >= max_total:
+                return out
+    return out
+
+
 def analyse_file(path: str) -> dict[str, Any]:
     df = _load(path)
 
@@ -511,6 +543,10 @@ def analyse_file(path: str) -> dict[str, Any]:
             if outlier_count > 0:
                 quality_notes.append(f"{col}: {outlier_count} potential outliers (IQR method)")
 
+    # Anomaly detection (6.5): values > 3 IQR from the median, tagged with the
+    # entity name so they can be surfaced in the report + council prompt.
+    anomalies = _detect_anomalies(df, columns_info, numeric_cols)
+
     charts = _detect_and_build_charts(df)
     data_excerpt = build_data_excerpt(df, columns_info, statistics)
 
@@ -521,6 +557,7 @@ def analyse_file(path: str) -> dict[str, Any]:
             "columns": columns_info,
             "statistics": statistics,
             "quality_notes": quality_notes,
+            "anomalies": anomalies,
         },
         "charts": charts,
         "data_excerpt": data_excerpt,  # real rows/values for the council prompt

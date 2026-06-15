@@ -25,7 +25,7 @@ _SYSTEM_MSG = (
 )
 
 
-def build_search_plan(question: str) -> list[dict]:
+def build_search_plan(question: str, entities: list[str] | None = None) -> list[dict]:
     """Return the ordered list of searches to run, each with its query, the
     human-readable reasoning shown in the Activity Panel, and a per-search system
     instruction that pushes Perplexity to return concrete numbers.
@@ -33,18 +33,22 @@ def build_search_plan(question: str) -> list[dict]:
     Today's date is injected into every query and live-data search so the model
     grounds answers in the current state of the world rather than stale training
     knowledge — the recurring failure mode was the model claiming it had "no live
-    data". The query keeps the user's actual `{topic}`; only date and
-    numeric-specificity are added (this module is topic-agnostic by design)."""
+    data". When `entities` (e.g. the top dataset entities) are supplied they are
+    appended to the probability/results searches so the model targets the actual
+    contenders rather than parsing the raw question (query enrichment, 3.1)."""
     topic = question.strip()
     now = datetime.utcnow()
     today_date = now.strftime("%B %d, %Y")
     today_month = now.strftime("%B")
     today_year = now.year
+    # Up to 6 entity names appended to targeted searches.
+    ent = " ".join((entities or [])[:6]).strip()
+    ent_suffix = f" {ent}" if ent else ""
     return [
         # Search 1 — live scores and results (Fix 3).
         {
             "purpose": "live_data",
-            "query": f"{topic} scores results today {today_date} latest",
+            "query": f"{topic} scores results today {today_date} latest{ent_suffix}",
             "system": (
                 "Find the actual scores and results for this subject played so far. "
                 "Include scorelines and figures. Even a YouTube title with a score "
@@ -76,7 +80,7 @@ def build_search_plan(question: str) -> list[dict]:
         # Search 3 — current win probabilities / odds (Fix 3).
         {
             "purpose": "consensus",
-            "query": f"{topic} win probability odds {today_date} who will win",
+            "query": f"{topic} win probability odds {today_date} who will win{ent_suffix}",
             "system": (
                 "Find specific win probability percentages or betting odds for each entity. "
                 "Numbers required. Return all percentages you find."
@@ -163,6 +167,66 @@ def extract_confirmed_facts(searches: list[dict]) -> str:
                 seen.add(title)
                 facts.append(f"CONFIRMED: {title}" + (f" [source: {url}]" if url else ""))
     return "\n".join(facts[:8])
+
+
+# Domain authority tiers for source quality scoring (3.2).
+_AUTHORITATIVE_DOMAINS = (
+    "fifa.com", "espn.com", "bbc.com", "bbc.co.uk", "reuters.com",
+    "apnews.com", "skysports.com", "theguardian.com", "uefa.com",
+)
+
+
+def score_source_quality(url: str) -> str:
+    """Classify a source URL as 'authoritative', 'standard', or 'unknown' (3.2)."""
+    if not url:
+        return "unknown"
+    u = url.lower()
+    if any(d in u for d in _AUTHORITATIVE_DOMAINS):
+        return "authoritative"
+    if u.startswith("http"):
+        return "standard"
+    return "unknown"
+
+
+# Scoreline within prose content: "Spain beat/defeated/... Germany 2-1" or
+# "Spain 2-1 Germany". Used to surface confirmed live results (3.4).
+_CONTENT_SCORE_PATTERNS = [
+    r"([A-Z][A-Za-z .'-]{1,28}?)\s+(\d{1,2})\s*[-–:]\s*(\d{1,2})\s+([A-Z][A-Za-z .'-]{1,28})",
+    r"([A-Z][A-Za-z .'-]{1,28}?)\s+(?:beat|defeated|edged|thrashed|routed)\s+([A-Z][A-Za-z .'-]{1,28}?)\s+(\d{1,2})\s*[-–:]\s*(\d{1,2})",
+]
+
+
+def extract_live_scores(searches: list[dict]) -> list[dict]:
+    """Scan source titles AND content for scorelines and return structured live
+    results (3.4): [{home_team, away_team, home_goals, away_goals}]. Deduplicated."""
+    out: list[dict] = []
+    seen: set[tuple] = set()
+
+    def add(home, away, hg, ag):
+        home, away = home.strip(" .'-"), away.strip(" .'-")
+        if not home or not away or home.lower() == away.lower():
+            return
+        try:
+            hg, ag = int(hg), int(ag)
+        except (TypeError, ValueError):
+            return
+        if hg > 20 or ag > 20:  # not a football score
+            return
+        key = (home.lower(), away.lower(), hg, ag)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({"home_team": home, "away_team": away, "home_goals": hg, "away_goals": ag})
+
+    for search in searches:
+        texts = [search.get("content", "") or ""]
+        texts += [s.get("title", "") or "" for s in search.get("sources", [])]
+        for text in texts:
+            for m in re.finditer(_CONTENT_SCORE_PATTERNS[0], text):
+                add(m.group(1), m.group(4), m.group(2), m.group(3))
+            for m in re.finditer(_CONTENT_SCORE_PATTERNS[1], text):
+                add(m.group(1), m.group(2), m.group(3), m.group(4))
+    return out[:10]
 
 
 def detect_event_status(searches: list[dict], today_date: str) -> str:
@@ -261,14 +325,14 @@ _PURPOSE_LABELS = {
 def combine_findings(searches: list[dict]) -> dict:
     """Combine the per-search results into the internet_findings object stored in
     the conversation JSON and consumed by the report + enriched prompt."""
-    # Dedupe sources across all searches.
+    # Dedupe sources across all searches; attach a quality tier to each (3.2).
     seen, sources = set(), []
     for s in searches:
         for src in s.get("sources", []):
             url = src.get("url")
             if url and url not in seen:
                 seen.add(url)
-                sources.append(src)
+                sources.append({**src, "quality": score_source_quality(url)})
 
     # A labelled, human-readable combined summary built from the three contents.
     blocks = []
@@ -278,11 +342,27 @@ def combine_findings(searches: list[dict]) -> dict:
             blocks.append(f"{label}:\n{s['content'].strip()}")
     combined_summary = "\n\n".join(blocks)
 
+    live_scores = extract_live_scores(searches)
+
+    # Research summary block (3.5): a one-line digest shown at the top of the section.
+    now = datetime.utcnow()
+    pct_count = len(set(re.findall(r"(\d+(?:\.\d+)?)\s*%", combined_summary)))
+    summary = {
+        "n_searches": len(searches),
+        "n_sources": len(sources),
+        "n_authoritative": sum(1 for s in sources if s.get("quality") == "authoritative"),
+        "n_live_scores": len(live_scores),
+        "n_probability_values": pct_count,
+        "as_of": now.strftime("%B %d, %Y at %-I:%M %p"),
+    }
+
     return {
         "searches": searches,
         "combined_summary": combined_summary,
         "sources": sources,
-        "as_of": datetime.utcnow().strftime("%B %Y"),
+        "live_scores": live_scores,
+        "summary": summary,
+        "as_of": now.strftime("%B %Y"),
         "error": not bool(combined_summary.strip()),
     }
 

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import ActivityPanel from './components/ActivityPanel';
+import CommandPalette from './components/CommandPalette';
 import { api } from './api';
 
 // ---- client-side persistence (frontend only — no backend changes) ----
@@ -84,12 +85,28 @@ function App() {
   // Stored per-conversation like the main file, with a root slot pre-conversation.
   const [matchFiles, setMatchFiles] = useState({});
   const [rootMatchFile, setRootMatchFile] = useState(null);
+  const [loadingConvos, setLoadingConvos] = useState(true);
   const [convMeta, setConvMeta] = useState(loadMeta);
   const [hiddenIds, setHiddenIds] = useState(loadHidden);
   const [input, setInput] = useState('');
   // Activity Panel: accumulating log of granular SSE "activity" events.
   const [activityLog, setActivityLog] = useState([]);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Global keyboard shortcuts (6.4): Cmd/Ctrl K (palette), N (new), Slash (panel), Escape (close).
+  useEffect(() => {
+    const onKey = (e) => {
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      if (mod && k === 'k') { e.preventDefault(); setPaletteOpen((o) => !o); }
+      else if (mod && k === 'n') { e.preventDefault(); setRootFile(null); setRootMatchFile(null); setInput(''); navigate('/'); }
+      else if (mod && e.key === '/') { e.preventDefault(); setActivityOpen((o) => !o); }
+      else if (e.key === 'Escape') { setPaletteOpen(false); setActivityOpen(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navigate]);
 
   const messageInputRef = useRef(null);
   const lastQuestionRef = useRef('');
@@ -152,6 +169,8 @@ function App() {
     } catch (error) {
       console.error('Failed to load conversations:', error);
       return [];
+    } finally {
+      setLoadingConvos(false);
     }
   };
 
@@ -398,7 +417,7 @@ function App() {
 
     try {
       const mode = fileId ? 'data' : 'text';
-      const userMessage = { role: 'user', content };
+      const userMessage = { role: 'user', content, ts: Date.now() };
       const assistantMessage = newProgressMessage(mode);
 
       setCurrentConversation((prev) => {
@@ -520,6 +539,7 @@ function App() {
         onDeleteConversation={handleDeleteConversation}
         onRenameConversation={handleRenameConversation}
         newChatDisabled={newChatDisabled}
+        loading={loadingConvos}
       />
       <ChatInterface
         conversation={currentConversation}
@@ -544,6 +564,13 @@ function App() {
         open={activityOpen}
         onClose={() => setActivityOpen(false)}
       />
+      {paletteOpen && (
+        <CommandPalette
+          conversations={sidebarConversations}
+          onSelect={(id) => navigate(`/chat/${id}`)}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -33,6 +33,7 @@ from .prediction_engine import (
     train_xgboost_model,
     run_monte_carlo_xgboost,
     xgboost_available,
+    xgboost_feature_importance,
 )
 
 
@@ -81,7 +82,15 @@ EXPORTS_DIR = "data/exports"
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 Path(EXPORTS_DIR).mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Datavisual.studio API")
+app = FastAPI(
+    title="Datavisual.studio API",
+    version="1.0.0",
+    description="Multi-model AI prediction platform API",
+)
+
+# Compress responses (5.2) — large report/dataset payloads shrink significantly.
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Enable CORS for local development
 app.add_middleware(
@@ -123,6 +132,33 @@ class Conversation(BaseModel):
 async def root():
     """Health check endpoint."""
     return {"status": "ok", "service": "Datavisual.studio API"}
+
+
+class ErrorLogRequest(BaseModel):
+    """A client-side error report (7.2)."""
+    message: str
+    stack: Optional[str] = None
+    component_stack: Optional[str] = None
+
+
+@app.post("/api/error-log")
+async def error_log(request: ErrorLogRequest):
+    """Append a client error to data/error.log (simple file append, no database).
+
+    Example body: {"message": "x is undefined", "stack": "...", "component_stack": "..."}
+    """
+    try:
+        Path("data").mkdir(parents=True, exist_ok=True)
+        with open("data/error.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "message": request.message,
+                "stack": request.stack,
+                "component_stack": request.component_stack,
+            }) + "\n")
+    except Exception:
+        pass  # logging must never fail the request
+    return {"logged": True}
 
 
 @app.get("/api/conversations", response_model=List[ConversationMetadata])
@@ -243,6 +279,36 @@ async def get_conversation(conversation_id: str):
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
+
+
+@app.get("/api/dataset/{conversation_id}")
+async def get_dataset_rows(conversation_id: str, limit: int = 2000):
+    """Return the raw rows of a conversation's uploaded dataset (capped) for the
+    interactive dashboard data table. Columns + records, JSON-safe."""
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    file_info = conversation.get("file")
+    if not file_info or not file_info.get("path") or not os.path.exists(file_info["path"]):
+        raise HTTPException(status_code=404, detail="No dataset file for this conversation")
+
+    from .data_analysis import _load
+    import numpy as np
+    try:
+        df = _load(file_info["path"])
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not read dataset: {e}")
+
+    total = len(df)
+    df = df.head(max(1, min(limit, 5000)))
+    # JSON-safe records (NaN → None).
+    df = df.replace({np.nan: None})
+    return {
+        "columns": [str(c) for c in df.columns],
+        "rows": df.to_dict(orient="records"),
+        "total_rows": total,
+        "returned_rows": len(df),
+    }
 
 
 @app.post("/api/conversations/{conversation_id}/message")
@@ -530,6 +596,7 @@ async def analyse(request: AnalyseRequest):
                 # ----------------------------------------------------------------
                 model_c_results = []
                 model_c_match_count = 0
+                model_c_features = []
                 model_c_status = "no_file"  # no_file | unavailable | insufficient | trained | failed
                 match_record = _find_upload(request.match_history_file_id) if request.match_history_file_id else None
                 if match_record and dataset_models.get("elo_dict"):
@@ -555,6 +622,7 @@ async def analyse(request: AnalyseRequest):
                                 )
                                 model_c_results = probs_to_prediction_results(model_c_probs, 10, ["dataset"])
                                 model_c_match_count = len(X)
+                                model_c_features = xgboost_feature_importance(xgb_model)
                                 model_c_status = "trained"
                                 # Re-form the ensemble as the mean of A, B and C.
                                 ensemble_probs = {
@@ -610,13 +678,26 @@ async def analyse(request: AnalyseRequest):
                             "Entities with strong recent form receive a small probability boost."
                         ),
                     )
+                # Home advantage (2.2) + stability check (2.5) activity events.
+                if dataset_models.get("host_entity"):
+                    yield act(
+                        "host_advantage",
+                        f"Host advantage applied to {dataset_models['host_entity']} (+{int(dataset_models.get('host_boost', 65))} ELO)",
+                        reasoning="The host nation receives the empirically-derived +65 ELO home-advantage boost in all match simulations.",
+                    )
+                if dataset_models.get("stability_note"):
+                    yield act(
+                        "prediction_validated",
+                        dataset_models["stability_note"],
+                        reasoning="A separate validation run confirms the Monte Carlo result is stable; otherwise the simulation count is increased automatically.",
+                    )
 
                 # Internet research — three targeted searches in sequence.
                 current_stage = "internet research"
                 update_conversation_status(request.conversation_id, "running", "research")
                 yield f"data: {json.dumps({'type': 'research_start'})}\n\n"
                 searches = []
-                for step in build_search_plan(actual_question):
+                for step in build_search_plan(actual_question, entity_names):
                     yield act("search_started", step["query"], reasoning=step["started_reasoning"])
                     res = await run_single_search(step["query"], step.get("system"))
                     search = {
@@ -731,6 +812,7 @@ async def analyse(request: AnalyseRequest):
                     "model_b_label": "ELO-Poisson / Dixon-Coles",
                     "model_b_description": f"Simulates actual scorelines using Poisson distribution with low-score correction (rho={dataset_models.get('rho', -0.107):.3f}). {_N_SIMULATIONS:,} runs.",
                     "model_c": predictions_to_table(model_c_results),
+                    "model_c_features": model_c_features,
                     "model_c_label": "XGBoost",
                     "model_c_description": (
                         f"Gradient-boosted trees trained on {model_c_match_count:,} historical matches."
@@ -793,6 +875,10 @@ async def analyse(request: AnalyseRequest):
                     "rho_fitted": dataset_models.get("rho_fitted", False),
                     "model_c_match_count": model_c_match_count,
                     "model_c_status": model_c_status,
+                    "host_entity": dataset_models.get("host_entity"),
+                    "host_boost": dataset_models.get("host_boost", 0),
+                    "stability_note": dataset_models.get("stability_note"),
+                    "n_simulations_used": dataset_models.get("n_simulations_used", _N_SIMULATIONS),
                 }
 
                 if prediction_table:
@@ -941,6 +1027,14 @@ async def reanalyse(request: ReanalyseRequest):
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Uploaded file not found on disk")
 
+    # Chart caching (5.4): if the filter state matches the last fingerprint, return
+    # the cached charts immediately instead of recomputing from the full dataset.
+    import hashlib
+    fingerprint = hashlib.sha256(json.dumps(request.filters, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    cached = pipeline.get("chart_cache")
+    if cached and cached.get("fingerprint") == fingerprint:
+        return cached["result"]
+
     # Load and filter
     result = analyse_file(file_path)
     if result.get("error"):
@@ -988,18 +1082,21 @@ async def reanalyse(request: ReanalyseRequest):
     from .report_builder import _build_data_segments_table
     data_segments = _build_data_segments_table(filtered_result["data_summary"])
 
-    # Persist active filters back to conversation
-    conv = storage.get_conversation(request.conversation_id)
-    if "pipeline" not in conv:
-        conv["pipeline"] = {}
-    conv["pipeline"]["active_filters"] = filters
-    storage.save_conversation(conv)
-
-    return {
+    response = {
         "charts": filtered_result["charts"],
         "data_segments_table": data_segments,
         "data_summary": filtered_result["data_summary"],
     }
+
+    # Persist active filters + cache the result under its filter fingerprint (5.4).
+    conv = storage.get_conversation(request.conversation_id)
+    if "pipeline" not in conv:
+        conv["pipeline"] = {}
+    conv["pipeline"]["active_filters"] = filters
+    conv["pipeline"]["chart_cache"] = {"fingerprint": fingerprint, "result": response}
+    storage.save_conversation(conv)
+
+    return response
 
 
 @app.get("/api/export-format")
@@ -1137,6 +1234,7 @@ def _save_enriched_conversation(
         "charts": serialisable_charts,
         "active_filters": {},
         "internet_findings": internet_findings,
+        "live_scores": (internet_findings or {}).get("live_scores", []),
         "council_responses": council_responses_dict,
         "chairman_synthesis": stage3_result.get("response", "") if stage3_result else "",
         "comparison_tables": report.get("comparison_tables", {}),

@@ -54,6 +54,30 @@ export const api = {
   },
 
   /**
+   * Best-effort client error logging (7.2).
+   */
+  async logError(payload) {
+    try {
+      await fetch(`${API_BASE}/api/error-log`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      /* ignore */
+    }
+  },
+
+  /**
+   * Fetch the raw dataset rows (capped) for the dashboard data table.
+   */
+  async getDataset(conversationId, limit = 2000) {
+    const response = await fetch(`${API_BASE}/api/dataset/${conversationId}?limit=${limit}`);
+    if (!response.ok) throw new Error('Failed to load dataset');
+    return response.json();
+  },
+
+  /**
    * Poll the pipeline status for a conversation.
    */
   async getStatus(conversationId) {

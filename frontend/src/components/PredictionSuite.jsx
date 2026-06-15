@@ -1,4 +1,4 @@
-import Plot from 'react-plotly.js';
+import Plot from './LazyPlot';
 
 // Section 1 — "Mathematical Model Predictions":
 //   1a) three model cards (A = ELO Monte Carlo, B = ELO-Poisson/Dixon-Coles,
@@ -33,17 +33,55 @@ function PointTable({ rows }) {
   );
 }
 
-function ModelCard({ title, subheader, rows, placeholder }) {
+// Tiny horizontal-bar sparkline of the top-5 probabilities (1.6).
+function Sparkline({ rows, color = '#4a90e2' }) {
+  const top = (rows || []).slice(0, 5);
+  if (top.length === 0) return null;
+  const max = Math.max(...top.map((r) => r.point_estimate || 0), 1);
+  return (
+    <div className="mt-3 pt-2 border-t border-[var(--border)] flex flex-col gap-1">
+      {top.map((r, i) => (
+        <div
+          key={i}
+          className="h-1.5 rounded-sm"
+          style={{ width: `${Math.max((r.point_estimate / max) * 100, 3)}%`, backgroundColor: color }}
+          title={`${r.entity}: ${r.point_estimate}%`}
+        />
+      ))}
+    </div>
+  );
+}
+
+const FEATURE_LABELS = {
+  elo_diff: 'ELO difference',
+  home_form: 'recent form (home)',
+  away_form: 'recent form (away)',
+  h2h_home_wins: 'head-to-head',
+  home_avg_goals_for: 'goals scored (home)',
+  away_avg_goals_for: 'goals scored (away)',
+  home_avg_goals_against: 'goals conceded (home)',
+  away_avg_goals_against: 'goals conceded (away)',
+};
+
+function ModelCard({ title, subheader, rows, placeholder, live, sparkColor, features }) {
   return (
     <div className="flex-1 basis-[260px] max-[900px]:basis-full rounded-[0.2rem] border border-[oklch(0.22_0_0)] bg-[oklch(0.15_0_0)] p-4">
       <div className="text-[13px] font-semibold text-white">{title}</div>
       <div className="text-[11px] text-[var(--muted)] mb-2">{subheader}</div>
       {placeholder ? (
-        <div className="mt-1 rounded border border-dashed border-[var(--border-2)] p-3 text-center text-[11px] text-[var(--faint)] leading-relaxed">
+        <div className={`mt-1 rounded border border-dashed p-3 text-center text-[11px] text-[var(--faint)] leading-relaxed ${live ? 'pulse-border' : 'border-[var(--border-2)]'}`}>
           {placeholder}
         </div>
       ) : (
-        <PointTable rows={rows} />
+        <>
+          <PointTable rows={rows} />
+          <Sparkline rows={rows} color={sparkColor} />
+          {features?.length > 0 && (
+            <div className="mt-2 text-[10px] text-[var(--faint)] leading-relaxed">
+              Top features: {features.map((f) => `${FEATURE_LABELS[f.feature] || f.feature} (${f.pct}%)`).join(', ')}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -213,17 +251,22 @@ export default function PredictionSuite({ suite, meta = {} }) {
           title="Model A"
           subheader={`ELO Monte Carlo · ${sims} simulations`}
           rows={model_a}
+          sparkColor={MODEL_COLORS.a}
         />
         <ModelCard
           title="Model B"
           subheader={`ELO-Poisson · Dixon-Coles ρ=${rho}`}
           rows={model_b}
+          sparkColor={MODEL_COLORS.b}
           placeholder={model_b.length === 0 ? 'No scoreline model available for this dataset.' : null}
         />
         <ModelCard
           title="Model C"
           subheader={showModelC ? `XGBoost · Trained on ${matchCount} matches` : 'XGBoost · Match history required'}
           rows={model_c}
+          sparkColor={MODEL_COLORS.c}
+          features={suite.model_c_features}
+          live
           placeholder={
             showModelC
               ? null

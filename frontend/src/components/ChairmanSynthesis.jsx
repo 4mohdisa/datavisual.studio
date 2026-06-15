@@ -1,5 +1,5 @@
 import ReactMarkdown from 'react-markdown';
-import Plot from 'react-plotly.js';
+import Plot from './LazyPlot';
 import PredictionSuite from './PredictionSuite';
 
 // Renders a single prediction-explanation chart (Plotly spec from the backend),

@@ -107,6 +107,21 @@ def _make_groups(team_list: list[str], group_size: int) -> list[list[str]]:
     return [shuffled[i:i + group_size] for i in range(0, len(shuffled), group_size)]
 
 
+def _make_groups_seeded(team_list: list[str], elos: dict[str, float], group_size: int) -> list[list[str]]:
+    """Pot-based seeding (2.1): rank by ELO, split into `group_size` pots, then draw
+    one team from each pot into every group — so the strongest teams can't all land
+    in the same group. Matches how real World Cup draws separate seeds."""
+    ranked = sorted(team_list, key=lambda t: elos.get(t, 1500), reverse=True)
+    n_groups = max(1, math.ceil(len(ranked) / group_size))
+    groups: list[list[str]] = [[] for _ in range(n_groups)]
+    for pot_idx in range(group_size):
+        pot = ranked[pot_idx * n_groups:(pot_idx + 1) * n_groups]
+        random.shuffle(pot)  # randomise which group within the pot
+        for gi, team in enumerate(pot):
+            groups[gi % n_groups].append(team)
+    return [g for g in groups if g]
+
+
 def _knockout_elo(a: str, b: str, elos: dict[str, float]) -> str:
     """Resolve a knockout tie using the ELO win-probability formula (Model A)."""
     return a if random.random() < elo_win_probability(elos[a], elos[b]) else b
@@ -127,15 +142,26 @@ def _run_knockout(qualifiers: list[str], elos: dict[str, float], match_fn) -> Op
     return remaining[0] if remaining else None
 
 
-def _simulate_bracket_once(team_list: list[str], elos: dict[str, float], match_fn, group_size: int) -> Optional[str]:
+# Seeding modes (2.1). "historical" would use the real 2026 draw — unavailable
+# here, so it falls back to pot-based seeding.
+SEEDING_MODES = ("seeded", "random", "historical")
+
+
+def _simulate_bracket_once(team_list: list[str], elos: dict[str, float], match_fn,
+                           group_size: int, seeding: str = "seeded") -> Optional[str]:
     """One full tournament: group stage (top 2 advance) → knockout bracket."""
+    if seeding == "random":
+        groups = _make_groups(team_list, group_size)
+    else:  # "seeded" or "historical" (no draw available → seeded)
+        groups = _make_groups_seeded(team_list, elos, group_size)
     qualifiers: list[str] = []
-    for group in _make_groups(team_list, group_size):
+    for group in groups:
         qualifiers.extend(simulate_group_stage(group, elos))
     return _run_knockout(qualifiers, elos, match_fn)
 
 
-def _run_tournament(teams: dict[str, float], n_simulations: int, match_fn) -> dict[str, float]:
+def _run_tournament(teams: dict[str, float], n_simulations: int, match_fn,
+                    seeding: str = "seeded") -> dict[str, float]:
     """Shared driver. Uses bracket simulation for <=48 entities, else a plain
     random-shuffle elimination. `match_fn(a, b, elos) -> winner` resolves a tie."""
     team_list = list(teams.keys())
@@ -150,7 +176,7 @@ def _run_tournament(teams: dict[str, float], n_simulations: int, match_fn) -> di
 
     for _ in range(n_simulations):
         if use_bracket:
-            champ = _simulate_bracket_once(team_list, teams, match_fn, group_size)
+            champ = _simulate_bracket_once(team_list, teams, match_fn, group_size, seeding)
         else:
             champ = _run_knockout(team_list, teams, match_fn)
         if champ is not None:
@@ -165,6 +191,7 @@ def _run_tournament(teams: dict[str, float], n_simulations: int, match_fn) -> di
 def run_monte_carlo_tournament(
     teams: dict[str, float],  # {team_name: elo_rating}
     n_simulations: int = 1000,
+    seeding: str = "seeded",
 ) -> dict[str, float]:
     """Simulate the tournament n times and return each team's win probability.
 
@@ -172,7 +199,7 @@ def run_monte_carlo_tournament(
     bracket where each tie is resolved by the ELO win-probability formula. Falls
     back to random-shuffle single elimination for fields larger than 48.
     """
-    return _run_tournament(teams, n_simulations, _knockout_elo)
+    return _run_tournament(teams, n_simulations, _knockout_elo, seeding)
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +285,7 @@ def run_monte_carlo_poisson(
     teams: dict[str, float],
     n_simulations: int = 10000,
     rho: float = -0.107,
+    seeding: str = "seeded",
 ) -> dict[str, float]:
     """Simulate the tournament n times using Poisson scorelines (Model B).
 
@@ -265,7 +293,8 @@ def run_monte_carlo_poisson(
     but each match is resolved by a simulated scoreline rather than a direct win
     probability — so close/low-scoring patterns (governed by `rho`) shift the odds.
     """
-    return _run_tournament(teams, n_simulations, lambda a, b, elos: _knockout_poisson(a, b, elos, rho))
+    return _run_tournament(teams, n_simulations,
+                           lambda a, b, elos: _knockout_poisson(a, b, elos, rho), seeding)
 
 
 # --- Dixon-Coles rho fitting (Improvement 3) -------------------------------
@@ -649,6 +678,59 @@ def _attach_agreement(results: list[PredictionResult], agreement: dict[str, floa
     return results
 
 
+# Empirically-derived host-nation ELO boost used by most academic football models (2.2).
+HOME_ADVANTAGE_ELO = 65.0
+
+
+def _detect_host_boost(df: Any, columns_info: list[dict], entity_col: Optional[str],
+                       values: dict[str, float], boost: float = HOME_ADVANTAGE_ELO) -> Optional[str]:
+    """If the dataset has an `is_host` column flagging an entity in `values`, add the
+    home-advantage ELO boost to it in place and return the host name (2.2)."""
+    host_col = next((c["name"] for c in columns_info if str(c["name"]).lower() == "is_host"), None)
+    if not host_col or not entity_col or host_col not in df.columns or entity_col not in df.columns:
+        return None
+    try:
+        flagged = df[df[host_col].astype(float) > 0][entity_col].astype(str).unique()
+    except Exception:
+        return None
+    host = next((h for h in flagged if h in values), None)
+    if host:
+        values[host] = values[host] + boost
+    return host
+
+
+def _interval_for_agreement(agreement: float) -> float:
+    """Confidence half-width (pp) keyed to Model A/B agreement (2.3): tight when the
+    models agree, wide when they diverge — replacing the flat ±1.5%."""
+    if agreement >= 0.85:
+        return 1.0
+    if agreement >= 0.65:
+        return 1.5
+    return 2.5
+
+
+def _results_with_interval(probs: dict[str, float], agreement: dict[str, float],
+                           top_n: int = 10) -> list[PredictionResult]:
+    """Ranked PredictionResults whose interval width is derived from model agreement
+    rather than a flat constant (2.3)."""
+    if not probs:
+        return []
+    total = sum(probs.values()) or 1.0
+    norm = {e: v / total for e, v in probs.items()}
+    out = []
+    for e, p in sorted(norm.items(), key=lambda x: -x[1])[:top_n]:
+        pct = round(p * 100, 1)
+        agr = agreement.get(e, 1.0)
+        w = _interval_for_agreement(agr)
+        out.append(PredictionResult(
+            entity=e, point_estimate=pct,
+            low_pct=round(max(0.1, pct - w), 1), high_pct=round(min(99.9, pct + w), 1),
+            confidence="high" if pct > 12 else "medium" if pct > 4 else "low",
+            sources_used=["dataset"], model_agreement=round(agr, 3),
+        ))
+    return out
+
+
 def build_dataset_models(
     df: Any,
     columns_info: list[dict],
@@ -682,10 +764,38 @@ def build_dataset_models(
     # Fit Dixon-Coles rho from the data (Improvement 3); default when no scorelines.
     rho, rho_n_matches, rho_fitted = fit_dixon_coles_rho(df, columns_info)
 
+    # Detect entity/time columns up front (used by host detection + form).
+    entity_col = None
+    time_col = None
     if kind == "elo":
+        from .data_analysis import _pick_entity_column, _pick_time_column
+        cat_cols = [c["name"] for c in columns_info if c["type"] == "categorical"]
+        entity_col = _pick_entity_column(df, cat_cols)
+        time_col, _ = _pick_time_column(df, columns_info)
+
+    # Home advantage (2.2) — boost the host nation's ELO before simulating.
+    host_entity = None
+    stability_note = None
+    n_used = n_simulations
+    if kind == "elo":
+        host_entity = _detect_host_boost(df, columns_info, entity_col, values)
         model_a_probs = run_monte_carlo_tournament(values, n_simulations)
         model_b_probs = run_monte_carlo_poisson(values, n_simulations, rho=rho)
         method = f"elo_monte_carlo({col}) + elo_poisson_dc({col}, rho={rho:.4f})"
+
+        # Prediction stability check (2.5): validate against a 1,000-sim run; if the
+        # top entity's probability drifts > 3pp, escalate to 20,000 sims and re-run.
+        if model_a_probs:
+            top = max(model_a_probs, key=model_a_probs.get)
+            valid = run_monte_carlo_tournament(values, 1000)
+            drift = abs(model_a_probs.get(top, 0) - valid.get(top, 0)) * 100
+            if drift > 3.0:
+                n_used = 20000
+                model_a_probs = run_monte_carlo_tournament(values, n_used)
+                model_b_probs = run_monte_carlo_poisson(values, n_used, rho=rho)
+                stability_note = f"Increased to {n_used:,} simulations for stability (drift {drift:.1f}%)"
+            else:
+                stability_note = f"Prediction validated — stable within {drift:.1f}% across validation run"
     else:
         # No ELO column → single softmax model; Poisson can't run without ratings.
         model_a_probs = _softmax_normalise(values)
@@ -694,18 +804,12 @@ def build_dataset_models(
 
     # Recent-form adjustment (Improvement 5) — only for ELO models with enough
     # coverage. Applied to both A and B (same per-entity multiplier), preserving
-    # their divergence. entity_col/time_col/form are also surfaced for Model C.
+    # their divergence. entity_col/time_col were detected above.
     form_applied = False
     form_count = 0
     form: dict[str, float] = {}
-    entity_col = None
-    time_col = None
     if kind == "elo":
         form_cols = _detect_form_columns(columns_info)
-        from .data_analysis import _pick_entity_column, _pick_time_column
-        cat_cols = [c["name"] for c in columns_info if c["type"] == "categorical"]
-        entity_col = _pick_entity_column(df, cat_cols)
-        time_col, _ = _pick_time_column(df, columns_info)
         if form_cols and entity_col and time_col:
             form = compute_form_index(df, entity_col, time_col, *form_cols)
             covered = sum(1 for e in values if e in form)
@@ -735,11 +839,12 @@ def build_dataset_models(
 
     return {
         "model_a_probs": model_a_probs,
-        "model_a_results": _attach_agreement(probs_to_prediction_results(model_a_probs, top_n, ["dataset"]), agreement),
+        # Interval widths now derive from model agreement (2.3) rather than a flat ±1.5%.
+        "model_a_results": _results_with_interval(model_a_probs, agreement, top_n),
         "model_b_probs": model_b_probs,
-        "model_b_results": _attach_agreement(probs_to_prediction_results(model_b_probs, top_n, ["dataset"]), agreement),
+        "model_b_results": _results_with_interval(model_b_probs, agreement, top_n),
         "ensemble_probs": ensemble_probs,
-        "ensemble_results": _attach_agreement(probs_to_prediction_results(ensemble_probs, top_n, ["dataset"]), agreement),
+        "ensemble_results": _results_with_interval(ensemble_probs, agreement, top_n),
         "entity_names": list(values.keys()),
         "method": method,
         "agreement": agreement,
@@ -748,6 +853,11 @@ def build_dataset_models(
         "rho_n_matches": rho_n_matches,
         "form_applied": form_applied,
         "form_count": form_count,
+        # Home advantage (2.2) + stability (2.5) metadata for the activity log / UI.
+        "host_entity": host_entity,
+        "host_boost": HOME_ADVANTAGE_ELO if host_entity else 0,
+        "stability_note": stability_note,
+        "n_simulations_used": n_used,
         # Surfaced for Model C (XGBoost) wiring in main.py.
         "elo_dict": dict(values) if kind == "elo" else {},
         "form_indices": form,
@@ -923,8 +1033,25 @@ def _build_elo_lookup(elo_df: Any, entity_col: str, time_col: str):
     return lookup, avg, global_mean
 
 
+_MODEL_CACHE_DIR = "data/models"
+
+
+def _training_hash(X: Any, y: Any) -> str:
+    """Stable hash of the training data so identical match-history CSVs reuse a
+    cached model (2.6)."""
+    import hashlib
+    try:
+        import pandas as pd
+        h = pd.util.hash_pandas_object(X, index=False).values.tobytes()
+        h += pd.util.hash_pandas_object(y, index=False).values.tobytes()
+        return hashlib.sha256(h).hexdigest()[:16]
+    except Exception:
+        return hashlib.sha256(repr((X, y)).encode()).hexdigest()[:16]
+
+
 def train_xgboost_model(X: Any, y: Any):
-    """Train an XGBoost classifier on match history. Returns None if xgboost is
+    """Train an XGBoost classifier on match history (2.6): disk-cached by training
+    hash, with early stopping on a 20% validation split. Returns None if xgboost is
     unavailable (e.g. missing OpenMP runtime) or the data is unusable."""
     try:
         from xgboost import XGBClassifier
@@ -932,16 +1059,62 @@ def train_xgboost_model(X: Any, y: Any):
         return None
     if X is None or len(X) == 0 or y is None or len(y) == 0:
         return None
+
+    import os
+    import pickle
+    os.makedirs(_MODEL_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(_MODEL_CACHE_DIR, f"{_training_hash(X, y)}.pkl")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass  # corrupt cache — retrain
+
     try:
+        # 20% validation split for early stopping (stratified when feasible).
+        eval_set = None
+        Xt, yt = X, y
+        try:
+            from sklearn.model_selection import train_test_split
+            strat = y if y.nunique() > 1 and y.value_counts().min() >= 2 else None
+            Xt, Xv, yt, yv = train_test_split(X, y, test_size=0.2, random_state=42, stratify=strat)
+            eval_set = [(Xv, yv)]
+        except Exception:
+            pass  # too little data to split — train on everything, no early stopping
+
         model = XGBClassifier(
             n_estimators=200, max_depth=4, learning_rate=0.1, subsample=0.8,
             random_state=42, eval_metric="mlogloss", verbosity=0,
+            early_stopping_rounds=10 if eval_set else None,
         )
-        model.fit(X, y)
+        if eval_set:
+            model.fit(Xt, yt, eval_set=eval_set, verbose=False)
+        else:
+            model.fit(Xt, yt)
+
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(model, f)
+        except Exception:
+            pass
         return model
     except Exception as e:
         print(f"[model_c] training failed: {e}", flush=True)
         return None
+
+
+def xgboost_feature_importance(model, top: int = 5) -> list[dict]:
+    """Top feature importances (gain) as [{feature, pct}], descending (2.6)."""
+    try:
+        importances = list(getattr(model, "feature_importances_", []))
+    except Exception:
+        return []
+    if not importances:
+        return []
+    total = sum(importances) or 1.0
+    paired = sorted(zip(_XGB_FEATURES, importances), key=lambda x: -x[1])
+    return [{"feature": f, "pct": round(v / total * 100, 1)} for f, v in paired[:top] if v > 0]
 
 
 def predict_match_xgboost(model, home_team: str, away_team: str,

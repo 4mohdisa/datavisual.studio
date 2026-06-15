@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Plus, Database, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Plus, Database, MoreHorizontal, Pencil, Trash2, Search } from 'lucide-react';
 import ConfirmDialog from './ConfirmDialog';
 
 function parseDate(s) {
@@ -8,6 +8,27 @@ function parseDate(s) {
   const hasTz = /[zZ]|[+-]\d\d:?\d\d$/.test(s);
   const d = new Date(hasTz ? s : s + 'Z');
   return isNaN(d.getTime()) ? null : d;
+}
+
+// Bucket a conversation by recency for the grouped sidebar list.
+function dateGroup(s) {
+  const d = parseDate(s);
+  if (!d) return 'Older';
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.floor((startOfToday - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  if (diffDays <= 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return 'Last 7 days';
+  return 'Older';
+}
+
+const GROUP_ORDER = ['Today', 'Yesterday', 'Last 7 days', 'Older'];
+
+// Truncate long titles with an ellipsis at 28 chars (1.1).
+function truncateTitle(t) {
+  const s = t || 'New conversation';
+  return s.length > 28 ? s.slice(0, 28).trimEnd() + '…' : s;
 }
 
 function formatRelativeTime(s) {
@@ -35,11 +56,30 @@ export default function Sidebar({
   onDeleteConversation,
   onRenameConversation,
   newChatDisabled,
+  loading = false,
 }) {
   const [openMenuId, setOpenMenuId] = useState(null);
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [query, setQuery] = useState('');
+
+  // Real-time title filter (1.1) — purely client-side, no backend call.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) => (c.title || '').toLowerCase().includes(q));
+  }, [conversations, query]);
+
+  // Group filtered conversations by recency, preserving the newest-first order.
+  const groups = useMemo(() => {
+    const out = {};
+    for (const c of filtered) {
+      const g = dateGroup(c.created_at);
+      (out[g] ||= []).push(c);
+    }
+    return GROUP_ORDER.filter((g) => out[g]?.length).map((g) => [g, out[g]]);
+  }, [filtered]);
 
   const newChatClass = newChatDisabled
     ? 'bg-[oklch(0.25_0_0)] text-[oklch(0.45_0_0)] cursor-not-allowed'
@@ -74,13 +114,37 @@ export default function Sidebar({
           <Plus size={16} strokeWidth={1.5} />
           New Conversation
         </button>
+
+        {/* Real-time title filter */}
+        <div className="relative mt-3">
+          <Search size={14} strokeWidth={1.5} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--faint)]" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search conversations"
+            className="w-full bg-[var(--surface-input)] border border-[var(--border-2)] rounded-md pl-8 pr-2 py-1.5 text-[13px] text-[var(--text)] placeholder:text-[var(--faint)] outline-none focus:border-[var(--accent)]"
+          />
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {conversations.length === 0 ? (
-          <div className="p-4 text-center text-[var(--faint)] text-sm">No conversations yet</div>
+        {loading ? (
+          <div className="flex flex-col gap-2 p-1">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="skeleton h-[44px] w-full" />
+            ))}
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-4 text-center text-[var(--faint)] text-sm">
+            {query ? 'No matches' : 'No conversations yet'}
+          </div>
         ) : (
-          conversations.map((conv) => {
+          groups.map(([groupLabel, convs]) => (
+            <div key={groupLabel} className="mb-2">
+              <div className="px-3 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--faint)]">
+                {groupLabel}
+              </div>
+              {convs.map((conv) => {
             const active = conv.id === currentConversationId;
             const isRenaming = renamingId === conv.id;
             const menuOpen = openMenuId === conv.id;
@@ -107,8 +171,8 @@ export default function Sidebar({
                       className="flex-1 min-w-0 bg-[var(--surface-input)] border border-[var(--border-2)] rounded px-2 py-0.5 text-sm text-[var(--text)] outline-none focus:border-[var(--accent)]"
                     />
                   ) : (
-                    <div className="flex-1 text-sm text-[var(--text)] mb-1 truncate">
-                      {conv.title || 'New conversation'}
+                    <div className="flex-1 text-sm text-[var(--text)] mb-1 truncate" title={conv.title || 'New conversation'}>
+                      {truncateTitle(conv.title)}
                     </div>
                   )}
                   {conv.hasFile && !isRenaming && (
@@ -122,7 +186,7 @@ export default function Sidebar({
                 {/* Three-dot menu trigger (appears on hover / when its menu is open) */}
                 {!isRenaming && (
                   <button
-                    className={`absolute top-2.5 right-2 p-1 rounded text-[var(--muted)] hover:text-[var(--text)] hover:bg-[oklch(0.18_0_0)] transition ${
+                    className={`absolute top-2.5 right-2 p-1 rounded text-[var(--muted)] hover:text-[var(--text)] hover:bg-[oklch(0.18_0_0)] transition-opacity duration-200 ${
                       menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
                     }`}
                     onClick={(e) => {
@@ -157,7 +221,9 @@ export default function Sidebar({
                 )}
               </div>
             );
-          })
+              })}
+            </div>
+          ))
         )}
       </div>
 

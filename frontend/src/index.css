@@ -108,3 +108,26 @@ body {
 /* Smooth appearance for chat messages and report content */
 @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .animate-msg-in { animation: msg-in 0.35s ease-out both; }
+
+/* Activity panel: items stagger in from the bottom (delay set inline per item). */
+@keyframes act-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+.animate-act-in { animation: act-in 0.32s ease-out both; }
+
+/* Loading skeleton shimmer (sidebar + dataset sections). */
+@keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+.skeleton {
+  background: linear-gradient(90deg, oklch(0.16 0 0) 25%, oklch(0.22 0 0) 50%, oklch(0.16 0 0) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 4px;
+}
+
+/* Model C placeholder: a slowly pulsing border so it reads as a live widget. */
+@keyframes pulse-border {
+  0%, 100% { border-color: oklch(0.30 0 0); }
+  50% { border-color: var(--accent); }
+}
+.pulse-border { animation: pulse-border 2s ease-in-out infinite; }
+
+/* "Being queried" indeterminate bar (council model tabs). */
+@keyframes querying-bar { 0% { left: -40%; } 100% { left: 100%; } }

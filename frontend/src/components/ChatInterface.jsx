@@ -154,6 +154,12 @@ export default function ChatInterface({
 
   return (
     <div className="relative flex-1 flex flex-col h-screen bg-[var(--background)] overflow-hidden">
+      {/* Top fade — messages appear to fade in from above (1.2) */}
+      <div className="pointer-events-none absolute top-0 left-0 right-0 h-[60px] z-10 bg-gradient-to-b from-[oklch(0.12_0_0)] to-transparent" />
+      {/* Bottom blur strip behind the floating input so content underneath is
+          softly blurred rather than fully visible (1.2) */}
+      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[150px] z-10 backdrop-blur-sm [mask-image:linear-gradient(to_top,black_55%,transparent)]" />
+
       {/* Sticky floating button to (re)open the Activity / Sources panel */}
       {!activityOpen && (activityAvailable || !isEmpty) && (
         <button
@@ -187,10 +193,15 @@ export default function ChatInterface({
           ) : (
             conversation.messages.map((msg, index) =>
               msg.role === 'user' ? (
-                <div key={index} className="flex justify-end mb-8 animate-msg-in">
+                <div key={index} className="group flex flex-col items-end mb-8 animate-msg-in">
                   <div className="bg-[var(--user-bubble)] text-[oklch(0.92_0_0)] rounded-xl max-w-[70%] px-4 py-3 whitespace-pre-wrap leading-relaxed">
                     {msg.content}
                   </div>
+                  {msg.ts && (
+                    <div className="text-[12px] text-[var(--faint)] mt-1 mr-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                      {new Date(msg.ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                    </div>
+                  )}
                 </div>
               ) : (
                 // AI response inks directly onto the page — no card, full width
@@ -224,7 +235,7 @@ export default function ChatInterface({
       </div>
 
       {/* Floating input bar */}
-      <div className={`absolute bottom-6 left-1/2 -translate-x-1/2 ${COLUMN}`}>
+      <div className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-20 ${COLUMN}`}>
         {(currentFile || currentMatchFile) && (
           <div className="flex flex-col items-start gap-1.5 mb-2">
             {currentFile && (

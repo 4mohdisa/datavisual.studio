@@ -1,4 +1,4 @@
-import Plot from 'react-plotly.js';
+import Plot from './LazyPlot';
 
 // Section 4 — "How we got here". Renders the explanation charts in a fixed order:
 //   A weight breakdown (donut) · B source comparison (grouped bar)

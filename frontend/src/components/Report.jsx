@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { LayoutDashboard } from 'lucide-react';
 import ReportSection from './ReportSection';
 import Charts from './Charts';
 import ComparisonTable from './ComparisonTable';
@@ -8,12 +10,14 @@ import CouncilOpinions from './CouncilOpinions';
 import ChairmanSynthesis from './ChairmanSynthesis';
 import PredictionSuite from './PredictionSuite';
 import CombinedPrediction from './CombinedPrediction';
+import CustomWeights from './CustomWeights';
 import AIAnalysis from './AIAnalysis';
 import PredictionCharts from './PredictionCharts';
 import ExportButton from './ExportButton';
 
 export default function Report({ report, conversationId }) {
   const [chartsData, setChartsData] = useState(null);
+  const navigate = useNavigate();
 
   if (!report || report.type !== 'full_report') return null;
 
@@ -45,6 +49,14 @@ export default function Report({ report, conversationId }) {
       {/* Section 1 — Dataset Overview (Mode A only) */}
       {mode === 'data' && dataset_overview && (
         <ReportSection title="Dataset Overview">
+          {conversationId && (
+            <button
+              onClick={() => navigate(`/dashboard/${conversationId}`)}
+              className="inline-flex items-center gap-2 mb-4 px-3 py-1.5 rounded-md border border-[var(--border-2)] text-[13px] text-[var(--text)] hover:border-[var(--accent)] hover:bg-[var(--active)] transition"
+            >
+              <LayoutDashboard size={15} strokeWidth={1.5} /> View Dashboard
+            </button>
+          )}
           <div className="flex gap-5 text-[22px] font-bold text-[var(--text)] mb-4">
             <span className="bg-[var(--active)] px-[18px] py-2.5 rounded-lg border border-[var(--border-2)]">
               {dataset_overview.data_summary?.row_count?.toLocaleString() || 0} rows
@@ -73,6 +85,18 @@ export default function Report({ report, conversationId }) {
               </ul>
             </div>
           )}
+          {dataset_overview.data_summary?.anomalies?.length > 0 && (
+            <details className="mt-3">
+              <summary className="text-xs font-semibold text-amber-400 uppercase tracking-wide cursor-pointer">
+                Anomalies detected ({dataset_overview.data_summary.anomalies.length})
+              </summary>
+              <ul className="m-0 mt-1.5 pl-[18px] text-[var(--muted)] text-[13px] list-disc">
+                {dataset_overview.data_summary.anomalies.map((a, i) => (
+                  <li key={i}>{a.entity} — {a.column} = {a.value}</li>
+                ))}
+              </ul>
+            </details>
+          )}
         </ReportSection>
       )}
 
@@ -89,7 +113,7 @@ export default function Report({ report, conversationId }) {
 
       {/* Section 3 — Visualisations (Mode A only) */}
       {mode === 'data' && (activeCharts.length > 0 || activeDataSegments.length > 0) && (
-        <ReportSection title="Visualisations">
+        <ReportSection title="Visualisations" badge={`${activeCharts.length} chart${activeCharts.length === 1 ? '' : 's'}`}>
           <Charts charts={activeCharts} />
           {activeDataSegments.length > 0 && (
             <ComparisonTable rows={activeDataSegments} title="Data segments" />
@@ -99,14 +123,20 @@ export default function Report({ report, conversationId }) {
 
       {/* Section 4 — Internet Research */}
       {internet_research && (
-        <ReportSection title="Internet Research">
+        <ReportSection
+          title="Internet Research"
+          badge={internet_research.sources?.length ? `${internet_research.sources.length} sources` : null}
+        >
           <InternetFindings internetResearch={internet_research} />
         </ReportSection>
       )}
 
       {/* Section 5 — Council Opinions */}
       {council_opinions && (
-        <ReportSection title="Council Opinions">
+        <ReportSection
+          title="Council Opinions"
+          badge={council_opinions.models?.length ? `${council_opinions.models.length} models` : null}
+        >
           <CouncilOpinions councilOpinions={council_opinions} />
         </ReportSection>
       )}
@@ -123,7 +153,8 @@ export default function Report({ report, conversationId }) {
 
             {/* 7 — Combined Prediction (Section 2) */}
             <ReportSection title="Combined Prediction">
-              <CombinedPrediction suite={predictionSuite} />
+              <CombinedPrediction suite={predictionSuite} meta={predictionMeta} />
+              <CustomWeights suite={predictionSuite} />
             </ReportSection>
 
             {/* 8 — AI Analysis (Section 3) */}
@@ -133,7 +164,12 @@ export default function Report({ report, conversationId }) {
 
             {/* 9 — How we got here (Section 4), collapsed by default */}
             {predictionCharts.length > 0 && (
-              <ReportSection title="How we got here" defaultOpen={false}>
+              <ReportSection
+                title="How we got here"
+                defaultOpen={false}
+                badge={`${predictionCharts.length} charts`}
+                subtitle="Explanation charts — weight breakdown, source comparison, ELO trajectory, breakdown table"
+              >
                 <PredictionCharts charts={predictionCharts} />
               </ReportSection>
             )}

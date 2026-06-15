@@ -1,4 +1,4 @@
-import Plot from 'react-plotly.js';
+import Plot from './LazyPlot';
 
 export default function Charts({ charts }) {
   if (!charts || charts.length === 0) return null;

@@ -114,7 +114,3 @@ DATAVISUAL_DEBUG=false              # Optional: enable debug logging
 ## 📄 License
 
 MIT © [Mohammed Isa](https://github.com/4mohdisa)
-
----
-
-*Built on top of [karpathy/llm-council](https://github.com/karpathy/llm-council) — extended with data analysis, internet research, a deterministic prediction engine, and a full React frontend.*

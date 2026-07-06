@@ -2,10 +2,20 @@
 
 import json
 import os
-from datetime import datetime
+import re
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR
+
+# Conversation ids are used to build file paths (here and in the export
+# endpoint), so they must never contain path separators or other junk. This is
+# the single trust-boundary check every caller routes through.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def is_valid_id(conversation_id: str) -> bool:
+    """True when the id is safe to embed in a filesystem path."""
+    return bool(conversation_id) and bool(_SAFE_ID.match(conversation_id))
 
 
 def ensure_data_dir():
@@ -15,34 +25,9 @@ def ensure_data_dir():
 
 def get_conversation_path(conversation_id: str) -> str:
     """Get the file path for a conversation."""
+    if not is_valid_id(conversation_id):
+        raise ValueError(f"Invalid conversation id: {conversation_id!r}")
     return os.path.join(DATA_DIR, f"{conversation_id}.json")
-
-
-def create_conversation(conversation_id: str) -> Dict[str, Any]:
-    """
-    Create a new conversation.
-
-    Args:
-        conversation_id: Unique identifier for the conversation
-
-    Returns:
-        New conversation dict
-    """
-    ensure_data_dir()
-
-    conversation = {
-        "id": conversation_id,
-        "created_at": datetime.utcnow().isoformat(),
-        "title": "New Conversation",
-        "messages": []
-    }
-
-    # Save to file
-    path = get_conversation_path(conversation_id)
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
-
-    return conversation
 
 
 def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
@@ -53,8 +38,10 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
         conversation_id: Unique identifier for the conversation
 
     Returns:
-        Conversation dict or None if not found
+        Conversation dict or None if not found (or the id is malformed)
     """
+    if not is_valid_id(conversation_id):
+        return None
     path = get_conversation_path(conversation_id)
 
     if not os.path.exists(path):
@@ -98,7 +85,9 @@ def list_conversations() -> List[Dict[str, Any]]:
                     "id": data["id"],
                     "created_at": data["created_at"],
                     "title": data.get("title", "New Conversation"),
-                    "message_count": len(data["messages"])
+                    "message_count": len(data["messages"]),
+                    "mode": data.get("mode", "chat"),
+                    "owner_id": data.get("owner_id"),
                 })
 
     # Sort by creation time, newest first
@@ -122,35 +111,6 @@ def add_user_message(conversation_id: str, content: str):
     conversation["messages"].append({
         "role": "user",
         "content": content
-    })
-
-    save_conversation(conversation)
-
-
-def add_assistant_message(
-    conversation_id: str,
-    stage1: List[Dict[str, Any]],
-    stage2: List[Dict[str, Any]],
-    stage3: Dict[str, Any]
-):
-    """
-    Add an assistant message with all 3 stages to a conversation.
-
-    Args:
-        conversation_id: Conversation identifier
-        stage1: List of individual model responses
-        stage2: List of model rankings
-        stage3: Final synthesized response
-    """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
-
-    conversation["messages"].append({
-        "role": "assistant",
-        "stage1": stage1,
-        "stage2": stage2,
-        "stage3": stage3
     })
 
     save_conversation(conversation)

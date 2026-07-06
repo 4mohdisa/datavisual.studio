@@ -1,142 +1,191 @@
-"""PDF export using WeasyPrint."""
+"""Report/dashboard export: WeasyPrint → headless Chrome → HTML fallback."""
 
 import asyncio
 import os
 
 # WeasyPrint depends on native libraries (Pango, Cairo). If those are missing the
 # import itself raises (often OSError). Capture that here so importing this module
-# never crashes the app — we surface a clear, actionable error only when the user
-# actually tries to export.
-_DEP_INSTALL_HINT = (
-    "PDF export requires the WeasyPrint system libraries (Pango, Cairo). "
-    "Install them with:\n"
-    "  macOS:  brew install pango cairo\n"
-    "  Linux:  apt-get install libpango-1.0-0 libcairo2"
-)
-
+# never crashes the app — export_report falls back to HTML instead.
 try:
     from weasyprint import HTML
-    _WEASYPRINT_IMPORT_ERROR = None
-except Exception as e:  # ImportError or OSError when native deps are absent
+except Exception:  # ImportError or OSError when native deps are absent
     HTML = None
-    _WEASYPRINT_IMPORT_ERROR = e
 
 
-class PDFExportError(Exception):
-    """Raised when a PDF cannot be generated, with a user-facing message."""
+def _chrome_path() -> str | None:
+    """Locate a Chrome/Chromium binary — the same one kaleido uses for chart
+    PNGs, so PDF export needs no extra dependency."""
+    import shutil
+    env_path = os.getenv("BROWSER_PATH")  # explicit override (Docker image sets this)
+    if env_path and os.path.exists(env_path):
+        return env_path
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for p in (
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ):
+        if os.path.exists(p):
+            return p
+    return None
 
 
-async def generate_pdf(conversation: dict, output_path: str):
-    """Generate a PDF report from a stored conversation and write to output_path.
+def _html_to_pdf_chrome(html: str, pdf_path: str) -> bool:
+    """Render HTML to PDF with headless Chrome. Returns False on any failure
+    so the caller can fall back to shipping the HTML file."""
+    import subprocess
+    import tempfile
 
-    Renders whatever sections are available; sections with errors or empty data
-    are simply skipped (see _build_html). Raises PDFExportError with an
-    actionable message if WeasyPrint or its native deps are unavailable.
-    """
-    if HTML is None:
-        raise PDFExportError(f"{_DEP_INSTALL_HINT}\n\n(Underlying error: {_WEASYPRINT_IMPORT_ERROR})")
-
+    chrome = _chrome_path()
+    if not chrome:
+        return False
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as tmp:
+        tmp.write(html)
+        tmp_path = tmp.name
     try:
-        html = _build_html(conversation)
-    except Exception as e:
-        raise PDFExportError(f"Failed to assemble report HTML: {e}")
-
-    try:
-        await asyncio.get_event_loop().run_in_executor(
-            None, lambda: HTML(string=html).write_pdf(output_path)
+        result = subprocess.run(
+            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--no-pdf-header-footer", "--print-to-pdf-no-header",
+             f"--print-to-pdf={pdf_path}", f"file://{tmp_path}"],
+            capture_output=True, timeout=90,
         )
+        return result.returncode == 0 and os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0
     except Exception as e:
-        # WeasyPrint can also fail at render time if native libs are partially
-        # installed — surface the same install hint.
-        raise PDFExportError(f"PDF rendering failed. {_DEP_INSTALL_HINT}\n\n(Underlying error: {e})")
+        print(f"[export] chrome pdf failed: {e}", flush=True)
+        return False
+    finally:
+        os.unlink(tmp_path)
 
 
 def pdf_available() -> bool:
-    """True when WeasyPrint (and its native deps) imported successfully."""
-    return HTML is not None
+    """True when either PDF path works: WeasyPrint (native libs) or headless
+    Chrome (already present for chart rendering)."""
+    return HTML is not None or _chrome_path() is not None
 
 
-async def export_report(conversation: dict, base_path_no_ext: str, force_html: bool = False,
+async def export_report(conversation: dict, base_path_no_ext: str, fmt: str | None = None,
                         mode: str | None = None) -> dict:
-    """Produce a downloadable report file.
+    """Produce a downloadable report file from ONE structured dark layout.
 
-    `mode="dashboard"` renders the visual dashboard layout (4.7). Otherwise: a PDF
-    via WeasyPrint, falling back (or when `force_html`) to a self-contained HTML.
+    `mode="dashboard"` renders the visual dashboard export; otherwise the full
+    report. `fmt` is 'pdf', 'html', or None (= pdf when any renderer exists).
+    PDF chain: WeasyPrint → headless Chrome → HTML fallback.
     Returns {path, media_type, extension, kind}.
     """
-    builder = _build_dashboard_html if mode == "dashboard" else _build_html
-    fallback_builder = _build_dashboard_html if mode == "dashboard" else _build_html_export
+    builder = _build_dashboard_html if mode == "dashboard" else _build_html_export
+    html = builder(conversation)
 
-    if HTML is not None and not force_html:
+    if fmt != "html":
         pdf_path = base_path_no_ext + ".pdf"
-        try:
-            html = builder(conversation)
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: HTML(string=html).write_pdf(pdf_path)
-            )
+        if HTML is not None:
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: HTML(string=html).write_pdf(pdf_path)
+                )
+                return {"path": pdf_path, "media_type": "application/pdf", "extension": "pdf", "kind": "pdf"}
+            except Exception as e:
+                print(f"[export] WeasyPrint failed, trying Chrome: {e}", flush=True)
+        ok = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _html_to_pdf_chrome(html, pdf_path)
+        )
+        if ok:
             return {"path": pdf_path, "media_type": "application/pdf", "extension": "pdf", "kind": "pdf"}
-        except Exception as e:
-            print(f"[export] PDF generation failed, falling back to HTML: {e}", flush=True)
+        if fmt == "pdf":
+            print("[export] no PDF renderer succeeded — shipping HTML instead", flush=True)
 
-    # Self-contained HTML fallback
     html_path = base_path_no_ext + ".html"
-    html = fallback_builder(conversation)
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
     return {"path": html_path, "media_type": "text/html", "extension": "html", "kind": "html"}
 
 
 def _build_dashboard_html(conversation: dict) -> str:
-    """Visual dashboard export (4.7): metrics strip, all charts, and a data sample.
-    More visual, less text than the report export."""
-    title = conversation.get("title", "Dashboard")
+    """Structured dashboard export: header, metrics grid, charts as embedded
+    PNGs in a two-column grid, insight cards with rendered markdown + sources,
+    and a data sample. Prefers the live widget spec; legacy records fall back
+    to the pipeline charts."""
+    from datetime import datetime as _dt
+
     pipeline = conversation.get("pipeline", {})
     summary = pipeline.get("data_summary", {}) or {}
-    charts = pipeline.get("charts", []) or pipeline.get("report", {}).get("sections", {}).get("visualisations", {}).get("charts", [])
-    stats = summary.get("statistics", {})
+    spec = conversation.get("dashboard") or {}
+    widgets = spec.get("widgets", [])
+    title = spec.get("title") or conversation.get("title", "Dashboard")
 
-    # Metrics: pick an ELO/rating-like column, else the first numeric.
-    import re as _re
-    names = list(stats.keys())
-    metric_cards = []
-    if names:
-        primary = next((n for n in names if _re.search(r"elo|rating|points|score", n, _re.I)), names[0])
-        p = stats[primary]
-        metric_cards = [
-            ("Highest " + primary, p.get("max")),
-            ("Lowest " + primary, p.get("min")),
-            ("Mean " + primary, p.get("mean")),
-            (primary + " range", (p.get("max") - p.get("min")) if p.get("max") is not None and p.get("min") is not None else "–"),
-        ]
+    metric_cards = [(w.get("label", ""), w.get("value"), w.get("sub")) for w in widgets if w.get("kind") == "metric"]
+    charts = [w for w in widgets if w.get("kind") == "chart" and w.get("plotly_json")]
+    insights = [w for w in widgets if w.get("kind") == "insight"]
+    if not charts:
+        charts = pipeline.get("charts", []) or pipeline.get("report", {}).get("sections", {}).get("visualisations", {}).get("charts", [])
+
+    meta_bits = []
+    if summary.get("row_count") is not None:
+        meta_bits.append(f"{summary['row_count']:,} rows · {summary.get('column_count', '?')} columns")
+    meta_bits.append("Exported " + _dt.utcnow().strftime("%B %d, %Y at %H:%M UTC"))
 
     parts = [
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
         f"<title>{_esc(title)}</title><style>{_DARK_EXPORT_CSS}"
-        ".metrics{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}"
-        ".metric{flex:1;min-width:150px;background:#161616;border:1px solid #2a2a2a;border-radius:8px;padding:14px}"
-        ".metric .l{font-size:11px;color:#9bb0cc;text-transform:uppercase}"
-        ".metric .v{font-size:22px;font-weight:700;color:#fff;margin-top:4px}"
+        ".metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0}"
+        ".metric{background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:16px}"
+        ".metric .l{font-size:11px;color:#9bb0cc;text-transform:uppercase;letter-spacing:.04em}"
+        ".metric .v{font-size:24px;font-weight:700;color:#fff;margin-top:6px}"
+        ".metric .s{font-size:11px;color:#8a8a8a;margin-top:2px}"
+        ".grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px}"
+        ".card{background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:16px}"
+        ".card h3{margin:0 0 10px 0}"
+        ".card img{max-width:100%;border-radius:6px}"
+        ".insight{background:#141821;border:1px solid #232a3a;border-radius:10px;padding:18px;margin-bottom:14px}"
+        ".insight h3{margin:0 0 10px 0;color:#9db8e8}"
+        ".insight .body{font-size:13px;color:#c7c7c7}"
+        ".insight .body p{margin:0 0 10px 0}"
+        ".insight .body ul,.insight .body ol{padding-left:20px;margin:0 0 10px 0}"
+        ".footer{margin-top:32px;padding-top:14px;border-top:1px solid #262626;color:#777;font-size:12px}"
+        "@media print{.grid2{grid-template-columns:1fr 1fr}}"
         "</style></head><body>"
-        f"<h1>{_esc(title)} — Dashboard</h1>"
-        f"<p class='muted'>{summary.get('row_count', '–')} rows · {summary.get('column_count', '–')} columns</p>"
+        f"<h1>{_esc(title)}</h1>"
+        f"<p class='muted'>{_esc(' · '.join(meta_bits))}</p>"
     ]
 
     if metric_cards:
         parts.append('<div class="metrics">')
-        for label, val in metric_cards:
+        for label, val, sub in metric_cards:
             vs = f"{val:,}" if isinstance(val, (int, float)) else _esc(str(val))
-            parts.append(f'<div class="metric"><div class="l">{_esc(label)}</div><div class="v">{vs}</div></div>')
+            sub_html = f'<div class="s">{_esc(str(sub))}</div>' if sub else ""
+            parts.append(f'<div class="metric"><div class="l">{_esc(label)}</div><div class="v">{vs}</div>{sub_html}</div>')
         parts.append("</div>")
 
-    parts.append('<div class="section"><h2>Charts</h2>')
-    if charts and _kaleido_available():
-        for c in charts:
-            html = _chart_png_html(c)
-            if html:
-                parts.append(html)
-    else:
-        parts.append('<p class="muted">Charts available in the interactive web dashboard.</p>')
-    parts.append("</div>")
+    if charts:
+        parts.append('<div class="section"><h2>Charts</h2>')
+        rendered = []
+        if _kaleido_available():
+            for c in charts:
+                png = _chart_png_html(c)
+                if png:
+                    rendered.append(f'<div class="card">{png}</div>')
+        if rendered:
+            parts.append(f'<div class="grid2">{"".join(rendered)}</div>')
+        else:
+            parts.append('<p class="muted">Charts could not be rendered — view them in the interactive web dashboard.</p>')
+        parts.append("</div>")
+
+    if insights:
+        parts.append('<div class="section"><h2>Insights</h2>')
+        for ins in insights:
+            parts.append('<div class="insight">')
+            parts.append(f"<h3>{_esc(ins.get('title', 'Insight'))}</h3>")
+            parts.append(f'<div class="body">{_md(ins.get("text", ""))}</div>')
+            srcs = (ins.get("sources") or [])[:8]
+            if srcs:
+                parts.append("<div>")
+                for sx in srcs:
+                    url = _esc(sx.get("url", ""))
+                    parts.append(f'<div class="source-item">• <a href="{url}">{_esc(sx.get("title", url))}</a></div>')
+                parts.append("</div>")
+            parts.append("</div>")
+        parts.append("</div>")
 
     # Data sample table.
     file_info = conversation.get("file") or {}
@@ -151,123 +200,19 @@ def _build_dashboard_html(conversation: dict) -> str:
         except Exception:
             pass
 
+    parts.append('<div class="footer">Generated by datavisual.studio</div>')
     parts.append("</body></html>")
     return "".join(parts)
 
 
-def _build_html(conversation: dict) -> str:
-    title = conversation.get("title", "Report")
-    pipeline = conversation.get("pipeline", {})
-    report = pipeline.get("report", {})
-    sections = report.get("sections", {})
-    mode = conversation.get("mode", "text")
-
-    parts = [f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{_esc(title)}</title>
-<style>
-  body {{ font-family: Arial, sans-serif; margin: 40px; color: #111; }}
-  h1 {{ color: #1a1a2e; }}
-  h2 {{ color: #16213e; border-bottom: 2px solid #4a90e2; padding-bottom: 4px; }}
-  h3 {{ color: #333; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 16px 0; }}
-  th {{ background: #4a90e2; color: white; padding: 8px; text-align: left; }}
-  td {{ padding: 8px; border: 1px solid #ddd; }}
-  tr:nth-child(even) {{ background: #f5f5f5; }}
-  .badge {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }}
-  .high {{ background: #d4edda; color: #155724; }}
-  .medium {{ background: #fff3cd; color: #856404; }}
-  .low {{ background: #f8d7da; color: #721c24; }}
-  .section {{ margin-bottom: 32px; }}
-  .source-item {{ margin: 4px 0; font-size: 13px; }}
-</style>
-</head>
-<body>
-<h1>{_esc(title)}</h1>
-"""]
-
-    # Dataset overview
-    if mode == "data" and "dataset_overview" in sections:
-        ds = sections["dataset_overview"].get("data_summary", {})
-        parts.append('<div class="section"><h2>Dataset Overview</h2>')
-        parts.append(f"<p>Rows: <strong>{ds.get('row_count', '–')}</strong> | Columns: <strong>{ds.get('column_count', '–')}</strong></p>")
-        cols = ds.get("columns", [])
-        if cols:
-            parts.append('<table><tr><th>Column</th><th>Type</th><th>Nulls</th></tr>')
-            for c in cols:
-                parts.append(f"<tr><td>{_esc(c['name'])}</td><td>{c['type']}</td><td>{c['null_count']}</td></tr>")
-            parts.append('</table>')
-        notes = sections["dataset_overview"].get("quality_notes", [])
-        if notes:
-            parts.append('<h3>Quality Notes</h3><ul>')
-            for n in notes:
-                parts.append(f"<li>{_esc(n)}</li>")
-            parts.append('</ul>')
-        parts.append('</div>')
-
-    # Internet research
-    if "internet_research" in sections:
-        ir = sections["internet_research"]
-        parts.append('<div class="section"><h2>Internet Research</h2>')
-        findings = ir.get("findings", "")
-        # ir.get("available") is False when research failed; older reports without
-        # the flag fall back to checking findings content.
-        available = ir.get("available", bool(findings))
-        if available and findings:
-            parts.append(f"<p>{_esc(findings)}</p>")
-            sources = ir.get("sources", [])
-            if sources:
-                parts.append('<h3>Sources</h3>')
-                for s in sources:
-                    url = _esc(s.get("url", ""))
-                    label = _esc(s.get("title", url))
-                    parts.append(f'<div class="source-item">• <a href="{url}">{label}</a></div>')
-        else:
-            parts.append('<p><em>Internet research was unavailable for this query.</em></p>')
-        parts.append('</div>')
-
-    # Council opinions
-    if "council_opinions" in sections:
-        co = sections["council_opinions"]
-        parts.append('<div class="section"><h2>Council Opinions</h2>')
-        agreement = co.get("agreement", "")
-        if agreement:
-            parts.append(f"<p><em>{_esc(agreement)}</em></p>")
-        responses = co.get("responses", {})
-        for model, content in responses.items():
-            parts.append(f"<h3>{_esc(model)}</h3>")
-            text = content.get("stage1", "") if isinstance(content, dict) else str(content)
-            parts.append(f"<p>{_esc(text[:1500])}{'…' if len(text) > 1500 else ''}</p>")
-        parts.append('</div>')
-
-    # Prediction (heading, explainer box, table, charts) — before the synthesis text.
-    parts.append(_prediction_section_html(conversation, dark=False))
-
-    # Chairman synthesis
-    if "chairman_synthesis" in sections:
-        cs = sections["chairman_synthesis"]
-        parts.append('<div class="section"><h2>Chairman Synthesis</h2>')
-        confidence = cs.get("confidence", "")
-        if confidence:
-            parts.append(f'<p>Confidence: <span class="badge {confidence}">{confidence.upper()}</span></p>')
-        content = cs.get("content", "")
-        if content:
-            parts.append(f"<p>{_esc(content)}</p>")
-        caveats = cs.get("caveats", [])
-        if caveats:
-            parts.append('<h3>Caveats</h3><ul>')
-            for c in caveats:
-                parts.append(f"<li>{_esc(c)}</li>")
-            parts.append('</ul>')
-        parts.append('</div>')
-
-    parts.append('</body></html>')
-    return "".join(parts)
-
 
 _DARK_EXPORT_CSS = """
+  /* --- print/PDF --- */
+  @page { size: A4; margin: 12mm; }
+  @media print {
+    .section, .metric, .card, .insight { page-break-inside: avoid; }
+    h2 { page-break-after: avoid; }
+  }
   /* --- reset --- */
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { background: #0f0f0f; }
@@ -298,30 +243,6 @@ _DARK_EXPORT_CSS = """
   .source-item { font-size: 13px; }
   .muted { color: #888; font-style: italic; }
 """
-
-
-def _render_chart_html(chart: dict) -> str:
-    """Render a chart as a static PNG (if kaleido is available) or a placeholder."""
-    title = _esc(chart.get("title", "Chart"))
-    spec = chart.get("plotly_json")
-    if spec:
-        try:
-            import json as _json
-            import base64
-            import plotly.io as pio
-            fig = pio.from_json(_json.dumps(spec))
-            png = pio.to_image(fig, format="png", width=900, height=450)  # requires kaleido
-            b64 = base64.b64encode(png).decode()
-            return (
-                f'<div class="chart"><div class="chart-title">{title}</div>'
-                f'<img src="data:image/png;base64,{b64}" style="max-width:100%"/></div>'
-            )
-        except Exception:
-            pass
-    return (
-        f'<div class="chart"><div class="chart-title">{title}</div>'
-        f'<div class="chart-ph">Chart data available — interactive chart not rendered in static export.</div></div>'
-    )
 
 
 def _kaleido_available() -> bool:
@@ -449,25 +370,6 @@ def _html_table_from_rows(rows: list) -> str:
     return "".join(out)
 
 
-def _prediction_table_html(predictions: list) -> str:
-    """Render the prediction table: Entity | Probability | Confidence (coloured dot)."""
-    if not predictions:
-        return ""
-    rows = ["<table><tr><th>Team / Entity</th><th class='prob'>Probability</th><th>Confidence</th></tr>"]
-    for p in predictions:
-        conf = str(p.get("confidence", "medium")).lower()
-        if conf not in ("high", "medium", "low"):
-            conf = "medium"
-        prob = f"{p.get('low_pct', '?')}–{p.get('high_pct', '?')}%"
-        rows.append(
-            f"<tr><td>{_esc(str(p.get('entity', '')))}</td>"
-            f"<td class='prob'>{_esc(prob)}</td>"
-            f"<td><span class='conf-dot dot-{conf}'></span>{conf.capitalize()}</td></tr>"
-        )
-    rows.append("</table>")
-    return "".join(rows)
-
-
 def _build_html_export(conversation: dict) -> str:
     """Self-contained dark-theme HTML report (fallback when PDF is unavailable).
 
@@ -521,9 +423,9 @@ def _build_html_export(conversation: dict) -> str:
                     if not content:
                         continue
                     label = _SEARCH_LABELS.get(s.get("purpose"), "Research")
-                    parts.append(f'<div><div class="search-label">{_esc(label)}</div><p>{_esc(content)}</p></div>')
+                    parts.append(f'<div><div class="search-label">{_esc(label)}</div>{_md(content)}</div>')
             elif ir.get("findings"):
-                parts.append(f"<p>{_esc(ir['findings'])}</p>")
+                parts.append(_md(ir["findings"]))
         else:
             parts.append('<p class="muted">Internet research was unavailable for this query.</p>')
         parts.append("</div>")
@@ -550,7 +452,7 @@ def _build_html_export(conversation: dict) -> str:
         if conf:
             parts.append(f'<p>Confidence: <span class="badge {conf}">{conf.upper()}</span></p>')
         if cs.get("content"):
-            parts.append(f"<p>{_esc(cs['content'])}</p>")
+            parts.append(_md(cs["content"]))
         if cs.get("caveats"):
             parts.append("<h3>Caveats</h3><ul>")
             parts += [f"<li>{_esc(c)}</li>" for c in cs["caveats"]]
@@ -576,6 +478,16 @@ _SEARCH_LABELS = {
     "live_data": "Current live data",
     "consensus": "Probability estimates and consensus",
 }
+
+
+def _md(text: str) -> str:
+    """Render markdown to HTML for exports (bold, lists, tables, links).
+    Falls back to escaped text with <br> if the markdown lib is unavailable."""
+    try:
+        import markdown as _markdown
+        return _markdown.markdown(text or "", extensions=["tables", "nl2br"])
+    except Exception:
+        return "<p>" + _esc(text or "").replace("\n", "<br>") + "</p>"
 
 
 def _esc(text: str) -> str:

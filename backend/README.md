@@ -10,9 +10,12 @@ FastAPI backend for the Datavisual.studio prediction platform.
 - uv package manager
 
 ## Setup
-  cp .env.example .env       # add OPENROUTER_API_KEY
   uv sync
   uv run python -m backend.main    # port 8001
+
+The OpenRouter API key and council/chairman/research models are set from the
+frontend Settings UI (stored in data/settings.json); a .env with
+OPENROUTER_API_KEY works as a fallback.
 
 ## Debug mode
   DATAVISUAL_DEBUG=true uv run python -m backend.main
@@ -26,11 +29,27 @@ FastAPI backend for the Datavisual.studio prediction platform.
 - report_builder.py — enriched prompt assembly + report structure
 - pdf_export.py — WeasyPrint PDF with embedded charts (HTML fallback)
 
+## Multi-user (local)
+Identity arrives as trusted headers from the Next.js proxy; backend/users.py
+maps Clerk ids to internal `u_<hex>` ids in data/users.json and every
+conversation is stamped/scoped by owner_id. Set PROXY_SHARED_SECRET (both
+sides) when hosting the backend publicly.
+
 ## Endpoints
+  GET  /api/settings
+  POST /api/settings
+  POST /api/settings/validate
   POST /api/conversations/create
   POST /api/upload
+  POST /api/connect          (import from SQL database or REST API)
+  POST /api/dashboard        (create or rebuild a dashboard widget spec)
+  POST /api/dashboard/{id}/chat  (edit the dashboard in place via chat/ops)
+  POST /api/dashboard/{id}/sync    (re-pull data + re-run pinned research, report changes)
   POST /api/analyse          (SSE stream)
   POST /api/reanalyse
+  GET  /api/conversations
   GET  /api/conversations/{id}
   GET  /api/conversations/{id}/status
+  GET  /api/dataset/{id}
   GET  /api/export/{id}
+  GET  /api/export-format

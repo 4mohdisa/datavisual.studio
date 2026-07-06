@@ -2,7 +2,6 @@
 
 from typing import Any
 from datetime import datetime
-import pandas as pd
 from .config import DEBUG
 
 
@@ -209,7 +208,6 @@ _RESEARCH_LABELS = {
     "existing_research": "EXISTING RESEARCH AND EXPERT ANALYSES",
     "live_data": "CURRENT LIVE DATA",
     "consensus": "PROBABILITY ESTIMATES AND CONSENSUS",
-    "live_aggregator": "LIVE MATCH DATA (AGGREGATOR SITES)",
 }
 
 
@@ -274,7 +272,8 @@ async def extract_predictions(text: str) -> list[dict]:
         {"role": "user", "content": f"{_PREDICTION_EXTRACT_INSTRUCTION}\n\nRESPONSE:\n{text}"}
     ]
     try:
-        resp = await query_model("openai/gpt-4o-mini", messages, timeout=60.0, max_tokens=1200)
+        from .config import get_fast_model
+        resp = await query_model(get_fast_model(), messages, timeout=60.0, max_tokens=1200)
     except Exception as e:
         print(f"[predictions] extraction failed: {e}", flush=True)
         return []
@@ -313,6 +312,37 @@ async def extract_predictions(text: str) -> list[dict]:
             "confidence": conf,
         })
     return out
+
+
+async def generate_follow_ups(question: str, synthesis: str) -> list[str]:
+    """Suggest 3 sharper follow-up research questions that build on this run.
+    Fast model, cheap. Returns [] on any failure."""
+    if not (question or "").strip():
+        return []
+    from .openrouter import query_model
+    from .config import get_fast_model
+    import json as _json
+    import re as _re
+
+    prompt = (
+        "Given this research question and its answer, propose exactly 3 concise, "
+        "specific follow-up questions that would deepen the analysis. Return ONLY a "
+        'JSON array of 3 strings, e.g. ["...","...","..."]. No prose.\n\n'
+        f"QUESTION: {question}\n\nANSWER (excerpt): {(synthesis or '')[:1500]}"
+    )
+    try:
+        resp = await query_model(get_fast_model(), [{"role": "user", "content": prompt}], timeout=40.0, max_tokens=400)
+    except Exception:
+        return []
+    raw = (resp or {}).get("content", "") if resp else ""
+    m = _re.search(r"\[.*\]", raw, flags=_re.DOTALL)
+    if not m:
+        return []
+    try:
+        items = _json.loads(m.group(0))
+    except Exception:
+        return []
+    return [str(x).strip() for x in items if isinstance(x, str) and x.strip()][:3]
 
 
 # ---------------------------------------------------------------------------

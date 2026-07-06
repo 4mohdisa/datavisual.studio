@@ -2,8 +2,8 @@
 
 import asyncio
 from typing import List, Dict, Any, Tuple, Optional
-from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, DEBUG
+from .openrouter import query_model
+from .config import get_council_models, get_chairman_model, DEBUG
 
 # Per-model timeout for council queries. If a model is slow or hangs we log it and
 # continue with whatever did respond — one model must never block the council.
@@ -50,9 +50,10 @@ async def _query_council_parallel(
     messages: List[Dict[str, str]],
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """Query every council model in parallel, each with logging + timeout."""
-    tasks = [_query_council_model(model, messages) for model in COUNCIL_MODELS]
+    models = get_council_models()
+    tasks = [_query_council_model(model, messages) for model in models]
     results = await asyncio.gather(*tasks)
-    return {model: result for model, result in zip(COUNCIL_MODELS, results)}
+    return {model: result for model, result in zip(models, results)}
 
 
 async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
@@ -81,7 +82,7 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
 
     if DEBUG:
         print(
-            f"[COUNCIL] Stage 1 complete: {len(stage1_results)}/{len(COUNCIL_MODELS)} models responded",
+            f"[COUNCIL] Stage 1 complete: {len(stage1_results)}/{len(get_council_models())} models responded",
             flush=True,
         )
     return stage1_results
@@ -235,17 +236,18 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         messages = [{"role": "system", "content": prediction_context}] + messages
 
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    chairman = get_chairman_model()
+    response = await query_model(chairman, messages)
 
     if response is None:
         # Fallback if chairman fails
         return {
-            "model": CHAIRMAN_MODEL,
+            "model": chairman,
             "response": "Error: Unable to generate final synthesis."
         }
 
     return {
-        "model": CHAIRMAN_MODEL,
+        "model": chairman,
         "response": response.get('content', '')
     }
 
@@ -352,8 +354,9 @@ Title:"""
 
     messages = [{"role": "user", "content": title_prompt}]
 
-    # Use gemini-2.5-flash for title generation (fast and cheap)
-    response = await query_model("google/gemini-2.5-flash", messages, timeout=30.0)
+    # Fast/cheap utility model (direct Gemini API when configured).
+    from .config import get_fast_model
+    response = await query_model(get_fast_model(), messages, timeout=30.0)
 
     if response is None:
         # Fallback to a generic title
@@ -369,45 +372,3 @@ Title:"""
         title = title[:47] + "..."
 
     return title
-
-
-async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
-    """
-    Run the complete 3-stage council process.
-
-    Args:
-        user_query: The user's question
-
-    Returns:
-        Tuple of (stage1_results, stage2_results, stage3_result, metadata)
-    """
-    # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query)
-
-    # If no models responded successfully, return error
-    if not stage1_results:
-        return [], [], {
-            "model": "error",
-            "response": "All models failed to respond. Please try again."
-        }, {}
-
-    # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
-
-    # Calculate aggregate rankings
-    aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
-
-    # Stage 3: Synthesize final answer
-    stage3_result = await stage3_synthesize_final(
-        user_query,
-        stage1_results,
-        stage2_results
-    )
-
-    # Prepare metadata
-    metadata = {
-        "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings
-    }
-
-    return stage1_results, stage2_results, stage3_result, metadata

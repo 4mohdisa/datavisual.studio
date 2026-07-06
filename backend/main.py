@@ -1,26 +1,27 @@
 """FastAPI backend for Datavisual.studio."""
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import uuid
 import json
 import asyncio
 import os
-import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 
 from . import storage
-from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
-from .config import COUNCIL_MODELS, DEBUG
+from .users import current_user_ctx, update_user_settings, user_from_request, user_settings
+from .council import generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from . import config
+from .config import DEBUG
 from .data_analysis import analyse_file
-from .research import build_search_plan, run_single_search, combine_findings, detect_event_status, extract_confirmed_facts
+from .research import plan_searches, run_single_search, combine_findings, detect_event_status, extract_confirmed_facts
 from .report_builder import build_enriched_prompt, build_report, extract_predictions
 from .prediction_engine import (
-    extract_dataset_probs,
     build_dataset_models,
     extract_internet_probs,
     extract_council_probs,
@@ -64,11 +65,6 @@ def _activity_payload(event: str, detail: str, reasoning: str = "", links: list 
     }
 
 
-def _activity(event: str, detail: str, reasoning: str = "", links: list | None = None) -> str:
-    """Format an activity SSE event string."""
-    return f"data: {json.dumps(_activity_payload(event, detail, reasoning, links))}\n\n"
-
-
 def _model_display(model: str) -> str:
     return model.split("/")[-1]
 
@@ -95,21 +91,74 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # Enable CORS for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    # Production: set FRONTEND_ORIGIN to your deployed Next.js URL.
+    allow_origins=[o for o in ["http://localhost:5173", "http://localhost:3000",
+                               os.getenv("FRONTEND_ORIGIN")] if o],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-class CreateConversationRequest(BaseModel):
-    """Request to create a new conversation."""
-    pass
+@app.middleware("http")
+async def _proxy_secret_guard(request: Request, call_next):
+    """When PROXY_SHARED_SECRET is set, only the Next.js proxy (which attaches
+    the matching X-Proxy-Secret header) may reach the API — so a publicly
+    hosted backend isn't an open endpoint. Unset = open local dev."""
+    secret = os.getenv("PROXY_SHARED_SECRET")
+    if secret and request.url.path.startswith("/api"):
+        if request.headers.get("x-proxy-secret") != secret:
+            return JSONResponse({"detail": "Forbidden"}, status_code=403)
+    # Bind the request identity for the whole call tree (incl. SSE generators),
+    # so per-user AI keys resolve inside every deep LLM call.
+    token = current_user_ctx.set(user_from_request(request))
+    try:
+        return await call_next(request)
+    finally:
+        current_user_ctx.reset(token)
 
 
-class SendMessageRequest(BaseModel):
-    """Request to send a message in a conversation."""
-    content: str
+def _owned(conversation_id: str, http_request: Request) -> dict:
+    """Load a conversation and enforce per-user ownership.
+
+    With an authenticated identity present (forwarded by the proxy), only the
+    owner sees the record — anything else, including ownerless legacy records,
+    is a 404 so ids can't be probed. Without identity (open dev mode) all
+    records are visible, matching the pre-auth behaviour."""
+    conv = storage.get_conversation(conversation_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    user = user_from_request(http_request)
+    if user is not None and conv.get("owner_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+def _stamp_owner(conv: dict, http_request: Request) -> None:
+    """Record our internal user id on a newly created conversation."""
+    user = user_from_request(http_request)
+    if user is not None:
+        conv["owner_id"] = user["id"]
+
+
+_ANALYTICS_PATH = Path("data/analytics.jsonl")
+
+
+def _track(http_request: Request, kind: str, meta: dict | None = None) -> None:
+    """Append one analytics event (local jsonl — feeds the admin panel).
+    Best-effort: must never fail a request."""
+    try:
+        user = user_from_request(http_request)
+        _ANALYTICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_ANALYTICS_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.utcnow().isoformat() + "Z",
+                "user_id": user["id"] if user else None,
+                "kind": kind,
+                "meta": meta,
+            }) + "\n")
+    except Exception:
+        pass
 
 
 class ConversationMetadata(BaseModel):
@@ -118,14 +167,7 @@ class ConversationMetadata(BaseModel):
     created_at: str
     title: str
     message_count: int
-
-
-class Conversation(BaseModel):
-    """Full conversation with all messages."""
-    id: str
-    created_at: str
-    title: str
-    messages: List[Dict[str, Any]]
+    mode: str = "chat"  # "chat" | "dashboard" — dashboards route to /dashboard/[id]
 
 
 @app.get("/")
@@ -161,18 +203,227 @@ async def error_log(request: ErrorLogRequest):
     return {"logged": True}
 
 
+class SettingsRequest(BaseModel):
+    """Partial settings update — omitted/None fields are left unchanged."""
+    openrouter_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    council_models: Optional[List[str]] = None
+    chairman_model: Optional[str] = None
+    research_model: Optional[str] = None
+    fast_model: Optional[str] = None
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Current settings with the API key masked."""
+    return config.get_settings_view()
+
+
+@app.post("/api/settings")
+async def update_settings(request: SettingsRequest):
+    """Save user settings (API key, council/chairman/research models)."""
+    patch = {
+        "openrouter_api_key": (request.openrouter_api_key or "").strip() or None,
+        "gemini_api_key": (request.gemini_api_key or "").strip() or None,
+        "council_models": [m.strip() for m in (request.council_models or []) if m.strip()] or None,
+        "chairman_model": (request.chairman_model or "").strip() or None,
+        "research_model": (request.research_model or "").strip() or None,
+        "fast_model": (request.fast_model or "").strip() or None,
+    }
+    config.save_settings(patch)
+    return config.get_settings_view()
+
+
+@app.post("/api/settings/validate")
+async def validate_api_key(request: SettingsRequest):
+    """Check a key (or the saved one) against OpenRouter without saving it."""
+    import httpx
+
+    key = (request.openrouter_api_key or "").strip() or config.get_api_key()
+    if not key:
+        return {"valid": False, "error": "No API key configured"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://openrouter.ai/api/v1/key",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            return {"valid": True, "label": data.get("label"), "usage": data.get("usage")}
+        return {"valid": False, "error": f"OpenRouter rejected the key (HTTP {resp.status_code})"}
+    except Exception as e:
+        return {"valid": False, "error": f"Could not reach OpenRouter: {e}"}
+
+
+class AccountSettingsRequest(BaseModel):
+    """Per-user AI keys — omitted/None fields are left unchanged."""
+    openrouter_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+
+
+def _mask(key: str | None) -> str:
+    key = key or ""
+    return f"{key[:8]}…{key[-4:]}" if len(key) > 14 else ("•" * len(key))
+
+
+@app.get("/api/account/settings")
+async def get_account_settings(http_request: Request):
+    """The signed-in user's own AI-key configuration, masked. In open dev mode
+    reports the effective global keys so the UI shows an accurate state."""
+    user = user_from_request(http_request)
+    if user is None:
+        return {
+            "scope": "global",
+            "openrouter_key_set": bool(config.get_api_key()),
+            "openrouter_key_masked": _mask(config.get_api_key()),
+            "gemini_key_set": bool(config.get_gemini_api_key()),
+        }
+    settings = user_settings(user)
+    return {
+        "scope": "user",
+        "openrouter_key_set": bool(settings.get("openrouter_api_key")),
+        "openrouter_key_masked": _mask(settings.get("openrouter_api_key")),
+        "gemini_key_set": bool(settings.get("gemini_api_key")),
+    }
+
+
+@app.post("/api/account/settings")
+async def update_account_settings(request: AccountSettingsRequest, http_request: Request):
+    """Save the user's own keys (stored on their record in data/users.json)."""
+    user = user_from_request(http_request)
+    if user is None:
+        raise HTTPException(status_code=400, detail="No signed-in user (open dev mode uses the backend .env keys)")
+    update_user_settings(user["clerk_id"], {
+        "openrouter_api_key": (request.openrouter_api_key or "").strip() or None,
+        "gemini_api_key": (request.gemini_api_key or "").strip() or None,
+    })
+    return await get_account_settings(http_request)
+
+
+@app.post("/api/account/validate")
+async def validate_account_key(request: AccountSettingsRequest, http_request: Request):
+    """Check an OpenRouter key (provided, or the user's saved one) live."""
+    import httpx
+
+    user = user_from_request(http_request)
+    key = (request.openrouter_api_key or "").strip() or user_settings(user).get("openrouter_api_key")
+    if not key and user is None:
+        key = config.get_api_key()
+    if not key:
+        return {"valid": False, "error": "No API key to validate"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get("https://openrouter.ai/api/v1/key",
+                                    headers={"Authorization": f"Bearer {key}"})
+        if resp.status_code == 200:
+            return {"valid": True, "usage": resp.json().get("data", {}).get("usage")}
+        return {"valid": False, "error": f"OpenRouter rejected the key (HTTP {resp.status_code})"}
+    except Exception as e:
+        return {"valid": False, "error": f"Could not reach OpenRouter: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Super admin — users + project analytics from the local disk. Gated by a
+# single ADMIN_PASSWORD (backend .env) supplied as the X-Admin-Password
+# header; no account needed. Unset password = open dev mode only.
+# ---------------------------------------------------------------------------
+
+def _require_admin(http_request: Request) -> None:
+    import secrets
+
+    password = os.getenv("ADMIN_PASSWORD", "")
+    if not password:
+        if user_from_request(http_request) is None:
+            return  # open dev mode, nothing configured
+        raise HTTPException(status_code=403, detail="Admin is disabled — set ADMIN_PASSWORD on the backend")
+    supplied = http_request.headers.get("x-admin-password") or ""
+    if not secrets.compare_digest(supplied, password):
+        raise HTTPException(status_code=403, detail="Admin password required")
+
+
+@app.get("/api/admin/overview")
+async def admin_overview(http_request: Request):
+    _require_admin(http_request)
+    from collections import Counter, defaultdict
+
+    # Users from the registry.
+    try:
+        registry = json.loads(Path("data/users.json").read_text())
+    except Exception:
+        registry = {}
+
+    # Conversations grouped per owner.
+    convs = storage.list_conversations()
+    per_owner: dict = defaultdict(lambda: {"research": 0, "dashboards": 0, "last_active": None})
+    totals = Counter()
+    for c in convs:
+        kind = "dashboards" if c.get("mode") == "dashboard" else "research"
+        totals[kind] += 1
+        o = per_owner[c.get("owner_id")]
+        o[kind] += 1
+        if not o["last_active"] or c["created_at"] > o["last_active"]:
+            o["last_active"] = c["created_at"]
+
+    # Events: totals by kind + last-14-day daily activity.
+    events_by_kind = Counter()
+    daily = Counter()
+    per_user_events = Counter()
+    try:
+        with open(_ANALYTICS_PATH, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                events_by_kind[e.get("kind")] += 1
+                daily[(e.get("ts") or "")[:10]] += 1
+                per_user_events[e.get("user_id")] += 1
+    except FileNotFoundError:
+        pass
+
+    users = []
+    for u in registry.values():
+        stats = per_owner.get(u["id"], {})
+        users.append({
+            "id": u["id"], "name": u.get("name"), "email": u.get("email"),
+            "created_at": u.get("created_at"),
+            "has_keys": bool((u.get("settings") or {}).get("openrouter_api_key")),
+            "research": stats.get("research", 0),
+            "dashboards": stats.get("dashboards", 0),
+            "events": per_user_events.get(u["id"], 0),
+            "last_active": stats.get("last_active"),
+        })
+    users.sort(key=lambda x: x.get("last_active") or "", reverse=True)
+
+    from datetime import timedelta
+    today = datetime.utcnow().date()
+    activity = [{"day": (today - timedelta(days=i)).isoformat(),
+                 "events": daily.get((today - timedelta(days=i)).isoformat(), 0)}
+                for i in range(13, -1, -1)]
+
+    return {
+        "totals": {
+            "users": len(registry),
+            "research": totals.get("research", 0),
+            "dashboards": totals.get("dashboards", 0),
+            "events": sum(events_by_kind.values()),
+        },
+        "events_by_kind": dict(events_by_kind),
+        "activity": activity,
+        "users": users,
+    }
+
+
 @app.get("/api/conversations", response_model=List[ConversationMetadata])
-async def list_conversations():
-    """List all conversations (metadata only)."""
-    return storage.list_conversations()
-
-
-@app.post("/api/conversations", response_model=Conversation)
-async def create_conversation(request: CreateConversationRequest):
-    """Create a new conversation."""
-    conversation_id = str(uuid.uuid4())
-    conversation = storage.create_conversation(conversation_id)
-    return conversation
+async def list_conversations(http_request: Request):
+    """List conversations (metadata only), scoped to the signed-in user when
+    an identity is present. Ownerless legacy records stay hidden per-user."""
+    items = storage.list_conversations()
+    user = user_from_request(http_request)
+    if user is not None:
+        items = [c for c in items if c.get("owner_id") == user["id"]]
+    return items
 
 
 class CreateConversationWithIdRequest(BaseModel):
@@ -184,13 +435,15 @@ class CreateConversationWithIdRequest(BaseModel):
 
 
 @app.post("/api/conversations/create")
-async def create_conversation_with_id(request: CreateConversationWithIdRequest):
+async def create_conversation_with_id(request: CreateConversationWithIdRequest, http_request: Request):
     """Create the initial conversation JSON for a client-generated id.
 
     The frontend generates the uuid, navigates to /chat/{id}, then calls this
     before opening the SSE stream. Idempotent: an existing conversation that
     already has messages is left untouched.
     """
+    if not storage.is_valid_id(request.conversation_id):
+        raise HTTPException(status_code=400, detail="Invalid conversation id")
     existing = storage.get_conversation(request.conversation_id)
     if existing and existing.get("messages"):
         return {"conversation_id": request.conversation_id}
@@ -205,6 +458,7 @@ async def create_conversation_with_id(request: CreateConversationWithIdRequest):
         "current_stage": "pending",
         "error_message": None,
     }
+    _stamp_owner(conversation, http_request)
     if request.file_id:
         conversation["file_id"] = request.file_id
     if request.match_history_file_id:
@@ -247,11 +501,9 @@ def update_conversation_status(
 
 
 @app.get("/api/conversations/{conversation_id}/status")
-async def get_conversation_status(conversation_id: str):
+async def get_conversation_status(conversation_id: str, http_request: Request):
     """Poll endpoint — current pipeline status/stage/progress for a conversation."""
-    conv = storage.get_conversation(conversation_id)
-    if conv is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = _owned(conversation_id, http_request)
 
     status = conv.get("status", "pending")
     stage = conv.get("current_stage", "pending")
@@ -268,26 +520,21 @@ async def get_conversation_status(conversation_id: str):
 
 
 @app.get("/api/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, http_request: Request):
     """Get a specific conversation with all its messages.
 
     Returns the raw stored dict (no response_model) so the frontend also receives
     pipeline data — including the persisted `activity` log and `file` info — which
     a strict response_model would otherwise strip out.
     """
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return conversation
+    return _owned(conversation_id, http_request)
 
 
 @app.get("/api/dataset/{conversation_id}")
-async def get_dataset_rows(conversation_id: str, limit: int = 2000):
+async def get_dataset_rows(conversation_id: str, http_request: Request, limit: int = 2000):
     """Return the raw rows of a conversation's uploaded dataset (capped) for the
     interactive dashboard data table. Columns + records, JSON-safe."""
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = _owned(conversation_id, http_request)
     file_info = conversation.get("file")
     if not file_info or not file_info.get("path") or not os.path.exists(file_info["path"]):
         raise HTTPException(status_code=404, detail="No dataset file for this conversation")
@@ -311,123 +558,8 @@ async def get_dataset_rows(conversation_id: str, limit: int = 2000):
     }
 
 
-@app.post("/api/conversations/{conversation_id}/message")
-async def send_message(conversation_id: str, request: SendMessageRequest):
-    """
-    Send a message and run the 3-stage council process.
-    Returns the complete response with all stages.
-    """
-    # Check if conversation exists
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    # Check if this is the first message
-    is_first_message = len(conversation["messages"]) == 0
-
-    # Add user message
-    storage.add_user_message(conversation_id, request.content)
-
-    # If this is the first message, generate a title
-    if is_first_message:
-        title = await generate_conversation_title(request.content)
-        storage.update_conversation_title(conversation_id, title)
-
-    # Run the 3-stage council process
-    stage1_results, stage2_results, stage3_result, metadata = await run_full_council(
-        request.content
-    )
-
-    # Add assistant message with all stages
-    storage.add_assistant_message(
-        conversation_id,
-        stage1_results,
-        stage2_results,
-        stage3_result
-    )
-
-    # Return the complete response with metadata
-    return {
-        "stage1": stage1_results,
-        "stage2": stage2_results,
-        "stage3": stage3_result,
-        "metadata": metadata
-    }
-
-
-@app.post("/api/conversations/{conversation_id}/message/stream")
-async def send_message_stream(conversation_id: str, request: SendMessageRequest):
-    """
-    Send a message and stream the 3-stage council process.
-    Returns Server-Sent Events as each stage completes.
-    """
-    # Check if conversation exists
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    # Check if this is the first message
-    is_first_message = len(conversation["messages"]) == 0
-
-    async def event_generator():
-        try:
-            # Add user message
-            storage.add_user_message(conversation_id, request.content)
-
-            # Start title generation in parallel (don't await yet)
-            title_task = None
-            if is_first_message:
-                title_task = asyncio.create_task(generate_conversation_title(request.content))
-
-            # Stage 1: Collect responses
-            yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-            stage1_results = await stage1_collect_responses(request.content)
-            yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
-
-            # Stage 2: Collect rankings
-            yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results)
-            aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
-            yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
-
-            # Stage 3: Synthesize final answer
-            yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results)
-            yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
-
-            # Wait for title generation if it was started
-            if title_task:
-                title = await title_task
-                storage.update_conversation_title(conversation_id, title)
-                yield f"data: {json.dumps({'type': 'title_complete', 'data': {'title': title}})}\n\n"
-
-            # Save complete assistant message
-            storage.add_assistant_message(
-                conversation_id,
-                stage1_results,
-                stage2_results,
-                stage3_result
-            )
-
-            # Send completion event
-            yield f"data: {json.dumps({'type': 'complete'})}\n\n"
-
-        except Exception as e:
-            # Send error event
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-    )
-
-
 # ---------------------------------------------------------------------------
-# New endpoints — datavisual.studio extension
+# Pipeline endpoints
 # ---------------------------------------------------------------------------
 
 class AnalyseRequest(BaseModel):
@@ -442,22 +574,33 @@ class ReanalyseRequest(BaseModel):
     filters: Dict[str, Any]
 
 
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...)):
     """Accept a CSV/Excel/JSON file upload and return metadata."""
-    import pandas as pd
-
+    # Path(...).name strips any client-supplied directory components so the
+    # filename can't traverse out of UPLOADS_DIR.
+    filename = Path(file.filename or "upload").name
     allowed_extensions = {".csv", ".xls", ".xlsx", ".json"}
-    suffix = Path(file.filename).suffix.lower()
+    suffix = Path(filename).suffix.lower()
     if suffix not in allowed_extensions:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
 
     file_id = str(uuid.uuid4())
-    save_name = f"{file_id}_{file.filename}"
+    save_name = f"{file_id}_{filename}"
     save_path = os.path.join(UPLOADS_DIR, save_name)
 
+    written = 0
     with open(save_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > _MAX_UPLOAD_BYTES:
+                f.close()
+                os.unlink(save_path)
+                raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+            f.write(chunk)
 
     try:
         result = analyse_file(save_path)
@@ -472,24 +615,351 @@ async def upload_file(file: UploadFile = File(...)):
 
     return {
         "file_id": file_id,
-        "filename": file.filename,
+        "filename": filename,
         "save_name": save_name,
         "rows": summary["row_count"],
         "columns": summary["column_count"],
+        "column_names": [c["name"] for c in summary["columns"] if c["type"] == "numeric"],
     }
 
 
+class CreateDashboardRequest(BaseModel):
+    """file_id → create a new standalone dashboard from an upload.
+    conversation_id → (re)build the widget spec on an existing record in place
+    (used to migrate records that predate the spec)."""
+    file_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    title: Optional[str] = None
+    template: Optional[str] = "overview"  # minimal | overview | full | kpi | visual
+    focus: Optional[str] = None           # numeric column to emphasise
+
+
+@app.post("/api/dashboard")
+async def create_dashboard(request: CreateDashboardRequest, http_request: Request):
+    """Create (or rebuild in place) a web dashboard widget spec — no AI
+    pipeline, no cost. Records live in the conversation store with
+    mode="dashboard" so the /dashboard/[id] page and dataset endpoints work
+    unchanged."""
+    from .dashboard import build_dashboard_spec
+
+    if request.conversation_id:
+        conv = _owned(request.conversation_id, http_request)
+        pipeline = conv.get("pipeline", {})
+        data_summary = pipeline.get("data_summary")
+        charts = pipeline.get("charts", [])
+        df = None
+        file_info = conv.get("file")
+        if file_info and file_info.get("path") and os.path.exists(file_info["path"]):
+            try:
+                df = analyse_file(file_info["path"]).get("dataframe")
+            except Exception:
+                df = None
+        conv["dashboard"] = build_dashboard_spec(
+            data_summary, charts, title=conv.get("title", "Dashboard"),
+            has_rows=bool(conv.get("file")), df=df,
+        )
+        storage.save_conversation(conv)
+        return {"conversation_id": conv["id"]}
+
+    file_record = _find_upload(request.file_id)
+    if file_record is None:
+        raise HTTPException(status_code=404, detail="Uploaded file not found")
+
+    result = analyse_file(file_record["path"])
+    if result.get("error"):
+        raise HTTPException(status_code=422, detail=result["error"])
+    data_summary = result["data_summary"]
+    charts = [{"title": c["title"], "type": c["type"], "plotly_json": c["plotly_json"]} for c in result["charts"]]
+
+    conversation_id = str(uuid.uuid4())
+    display_name = file_record["filename"].split("_", 1)[-1]
+    title = request.title or f"Dashboard — {display_name}"
+    new_conv = {
+        "id": conversation_id,
+        "created_at": datetime.utcnow().isoformat(),
+        "title": title,
+        "mode": "dashboard",
+        "messages": [],
+        "file": {
+            "id": request.file_id,
+            "name": file_record["filename"],
+            "path": file_record["path"],
+            "rows": data_summary["row_count"],
+            "columns": data_summary["column_count"],
+            "source": _load_sources().get(request.file_id),
+        },
+        "pipeline": {"data_summary": data_summary, "charts": charts},
+        "dashboard": build_dashboard_spec(data_summary, charts, title=title, df=result.get("dataframe"), template=request.template or "overview", focus=request.focus),
+        "status": "complete",
+        "current_stage": "done",
+    }
+    _stamp_owner(new_conv, http_request)
+    storage.save_conversation(new_conv)
+    _track(http_request, "dashboard_created", {"conversation_id": conversation_id, "template": request.template})
+    return {"conversation_id": conversation_id}
+
+
+class DashboardChatRequest(BaseModel):
+    """Either a natural-language `message` (LLM turns it into ops) or direct
+    `ops` (e.g. the ✕ button removing a widget — no LLM round-trip)."""
+    message: Optional[str] = None
+    ops: Optional[List[Dict[str, Any]]] = None
+
+
+@app.post("/api/dashboard/{conversation_id}/chat")
+async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, http_request: Request):
+    """Edit the EXISTING dashboard in place — never rebuilds it. Returns the
+    assistant reply plus the updated spec."""
+    from .dashboard import apply_ops, build_dashboard_spec, run_editor_turn
+
+    conv = _owned(conversation_id, http_request)
+
+    pipeline = conv.get("pipeline", {})
+    data_summary = pipeline.get("data_summary")
+
+    # The chart/metric engine needs the raw dataframe when the record has one.
+    df = None
+    file_info = conv.get("file")
+    if file_info and file_info.get("path") and os.path.exists(file_info["path"]):
+        from .data_analysis import _clean_numeric_strings, _load, _try_parse_datetime
+        try:
+            df, _ = _clean_numeric_strings(_load(file_info["path"]))
+            df = _try_parse_datetime(df)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Could not read dataset: {e}")
+
+    # Migrate records that predate the widget spec.
+    if not conv.get("dashboard"):
+        conv["dashboard"] = build_dashboard_spec(
+            data_summary, pipeline.get("charts", []),
+            title=conv.get("title", "Dashboard"), has_rows=bool(conv.get("file")), df=df,
+        )
+    dashboard = conv["dashboard"]
+
+    if request.ops:
+        notes = await apply_ops(dashboard, request.ops, df, data_summary)
+        reply = "Done." if not notes else "; ".join(notes)
+    elif request.message and request.message.strip():
+        _track(http_request, "assistant_edit", {"conversation_id": conversation_id})
+        reply = await run_editor_turn(request.message.strip(), dashboard, data_summary, df)
+    else:
+        raise HTTPException(status_code=400, detail="Provide a message or ops")
+
+    conv["title"] = dashboard.get("title", conv.get("title"))
+    storage.save_conversation(conv)
+    return {"reply": reply, "dashboard": dashboard}
+
+
+class ConnectSourceRequest(BaseModel):
+    """One-shot data import from an external source. Credentials are used for
+    this single fetch and never persisted."""
+    type: str  # "database" | "api"
+    name: Optional[str] = None
+    connection_string: Optional[str] = None  # database: SQLAlchemy URL
+    query: Optional[str] = None              # database: SELECT query
+    url: Optional[str] = None                # api: endpoint returning JSON records
+    headers: Optional[Dict[str, str]] = None  # api: optional request headers
+
+
+_CONNECT_MAX_ROWS = 100_000
+
+# Connector configs are persisted (locally, gitignored) so dashboards backed by
+# a database/API can be refreshed with one click — the Power BI model.
+_SOURCES_PATH = Path("data/sources.json")
+
+
+def _load_sources() -> dict:
+    try:
+        return json.loads(_SOURCES_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_source(file_id: str, cfg: dict) -> None:
+    sources = _load_sources()
+    sources[file_id] = cfg
+    _SOURCES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _SOURCES_PATH.write_text(json.dumps(sources, indent=2))
+
+
+def _run_source_import(cfg: dict):
+    """Fetch a dataframe from a connector config ({type, connection_string,
+    query} or {type, url, headers}). Shared by /api/connect and refresh.
+    Raises HTTPException with an actionable message on failure."""
+    import pandas as pd
+
+    if cfg.get("type") == "database":
+        if not cfg.get("connection_string") or not cfg.get("query"):
+            raise HTTPException(status_code=400, detail="connection_string and query are required")
+        # Import-only guard: this reads data, it must never mutate the user's
+        # database by accident.
+        if not re.match(r"(?is)^\s*(select|with)\b", cfg["query"]):
+            raise HTTPException(status_code=400, detail="Only SELECT (or WITH … SELECT) queries are allowed")
+        try:
+            from sqlalchemy import create_engine
+            engine = create_engine(cfg["connection_string"])
+            try:
+                return pd.read_sql(cfg["query"], engine)
+            finally:
+                engine.dispose()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Database import failed: {e}")
+
+    if cfg.get("type") == "api":
+        if not cfg.get("url"):
+            raise HTTPException(status_code=400, detail="url is required")
+        import httpx
+        try:
+            resp = httpx.get(cfg["url"], headers=cfg.get("headers") or {}, timeout=30.0, follow_redirects=True)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"API request failed: {e}")
+        # Accept a bare array, or the first array value inside an object
+        # (covers the common {"data": [...]} / {"results": [...]} shapes).
+        if isinstance(payload, list):
+            records = payload
+        elif isinstance(payload, dict):
+            records = next((v for v in payload.values() if isinstance(v, list)), None)
+        else:
+            records = None
+        if not records:
+            raise HTTPException(status_code=422, detail="Response JSON contains no array of records")
+        try:
+            return pd.json_normalize(records)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Could not tabulate API response: {e}")
+
+    raise HTTPException(status_code=400, detail="type must be 'database' or 'api'")
+
+
+@app.post("/api/connect")
+def connect_source(request: ConnectSourceRequest, http_request: Request):
+    """Import data from a SQL database or a REST API and materialise it as an
+    uploaded dataset (CSV in data/uploads). Downstream everything — AI analysis,
+    dashboards, predictions — treats it exactly like a file upload. The
+    connector config is stored locally so dashboards can Refresh from it.
+
+    Declared sync (`def`) on purpose: FastAPI runs it in a threadpool, so the
+    blocking pd.read_sql / httpx call doesn't stall the event loop."""
+    cfg = {
+        "type": request.type,
+        "name": request.name,
+        "connection_string": request.connection_string,
+        "query": request.query,
+        "url": request.url,
+        "headers": request.headers,
+    }
+    df = _run_source_import(cfg)
+    if df is None or len(df) == 0:
+        raise HTTPException(status_code=422, detail="The source returned no rows")
+    df = df.head(_CONNECT_MAX_ROWS)
+
+    source_name = request.name or ("database_import" if request.type == "database" else "api_import")
+    safe_name = re.sub(r"[^\w-]+", "_", source_name).strip("_") or "import"
+    file_id = str(uuid.uuid4())
+    save_name = f"{file_id}_{safe_name}.csv"
+    save_path = os.path.join(UPLOADS_DIR, save_name)
+    df.to_csv(save_path, index=False)
+
+    result = analyse_file(save_path)
+    if result.get("error"):
+        os.unlink(save_path)
+        raise HTTPException(status_code=422, detail=result["error"])
+    summary = result["data_summary"]
+
+    _save_source(file_id, cfg)
+    _track(http_request, "connector_import", {"type": request.type})
+
+    return {
+        "file_id": file_id,
+        "filename": f"{safe_name}.csv",
+        "save_name": save_name,
+        "rows": summary["row_count"],
+        "columns": summary["column_count"],
+        "column_names": [c["name"] for c in summary["columns"] if c["type"] == "numeric"],
+        "source": request.type,
+    }
+
+
+@app.get("/api/dashboard/{conversation_id}/suggestions")
+def dashboard_suggestions(conversation_id: str, http_request: Request):
+    """Prebuilt components (charts/metrics/sections) computed from the dataset,
+    minus what the dashboard already shows. One click on the frontend applies
+    the returned op directly — no LLM, no regeneration."""
+    from .dashboard import component_suggestions
+
+    conv = _owned(conversation_id, http_request)
+    df = None
+    file_info = conv.get("file")
+    if file_info and file_info.get("path") and os.path.exists(file_info["path"]):
+        try:
+            df = analyse_file(file_info["path"]).get("dataframe")
+        except Exception:
+            df = None
+    return {"suggestions": component_suggestions(
+        df, conv.get("pipeline", {}).get("data_summary"), conv.get("dashboard") or {},
+    )}
+
+
+@app.post("/api/dashboard/{conversation_id}/sync")
+async def sync_dashboard_endpoint(conversation_id: str, http_request: Request):
+    """The 'Update' action — the living-monitor core. Re-pulls connector data
+    (if any) AND re-runs every pinned research query, rebuilding the affected
+    widgets in place, then returns a human-readable list of WHAT CHANGED. Works
+    with data only, research only, or both."""
+    from .dashboard import sync_dashboard
+
+    conv = _owned(conversation_id, http_request)
+    dashboard = conv.get("dashboard")
+    if not dashboard:
+        raise HTTPException(status_code=400, detail="This conversation has no dashboard to sync")
+
+    file_info = conv.get("file") or {}
+    source = file_info.get("source") or _load_sources().get(file_info.get("id", ""))
+    has_research = any(w.get("kind") == "insight" and w.get("query") for w in dashboard.get("widgets", []))
+    if not source and not has_research:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to sync — connect a data source or pin a research topic first.",
+        )
+
+    # Re-pull connector data when the dashboard is source-backed.
+    fresh_df = None
+    data_summary = conv.get("pipeline", {}).get("data_summary")
+    if source:
+        df = _run_source_import(source)
+        if df is None or len(df) == 0:
+            raise HTTPException(status_code=422, detail="The source returned no rows")
+        df = df.head(_CONNECT_MAX_ROWS)
+        df.to_csv(file_info["path"], index=False)
+        result = analyse_file(file_info["path"])
+        if result.get("error"):
+            raise HTTPException(status_code=422, detail=result["error"])
+        data_summary = result["data_summary"]
+        fresh_df = result["dataframe"]
+        conv["file"]["rows"] = data_summary["row_count"]
+        conv["file"]["columns"] = data_summary["column_count"]
+        conv.setdefault("pipeline", {})["data_summary"] = data_summary
+
+    changes = await sync_dashboard(dashboard, fresh_df, data_summary)
+    storage.save_conversation(conv)
+    _track(http_request, "sync", {"conversation_id": conversation_id, "changes": len(changes)})
+    return {"dashboard": dashboard, "changes": changes, "synced_at": dashboard.get("last_synced")}
+
+
 @app.post("/api/analyse")
-async def analyse(request: AnalyseRequest):
+async def analyse(request: AnalyseRequest, http_request: Request):
     """
     Main pipeline endpoint. Streams SSE events following the existing pattern.
 
     First message: full pipeline (data analysis → internet research → council → report)
     Follow-up: chairman only (or full re-run if message starts with !council)
     """
-    conversation = storage.get_conversation(request.conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = _owned(request.conversation_id, http_request)
+    _track(http_request, "research_run", {"conversation_id": request.conversation_id})
 
     is_first_message = len(conversation["messages"]) == 0
     force_council = request.question.strip().startswith("!council")
@@ -697,7 +1167,8 @@ async def analyse(request: AnalyseRequest):
                 update_conversation_status(request.conversation_id, "running", "research")
                 yield f"data: {json.dumps({'type': 'research_start'})}\n\n"
                 searches = []
-                for step in build_search_plan(actual_question, entity_names):
+                data_hint = ", ".join(c["name"] for c in (data_summary or {}).get("columns", [])[:10])
+                for step in await plan_searches(actual_question, entity_names, data_hint):
                     yield act("search_started", step["query"], reasoning=step["started_reasoning"])
                     res = await run_single_search(step["query"], step.get("system"))
                     search = {
@@ -714,6 +1185,12 @@ async def analyse(request: AnalyseRequest):
                         links=[{"title": s.get("title", ""), "url": s.get("url", "")} for s in search["sources"]],
                     )
                 internet_findings = combine_findings(searches)
+                if not any(s.get("sources") for s in searches):
+                    yield act(
+                        "research_warning",
+                        "Web research returned no sources",
+                        reasoning="The analysis will rely on the dataset and model knowledge. Check the research model in Settings if this keeps happening.",
+                    )
                 yield f"data: {json.dumps({'type': 'research_complete', 'data': internet_findings})}\n\n"
 
                 # Event-status check (Fix 2) — scan the search results for evidence
@@ -755,13 +1232,28 @@ async def analyse(request: AnalyseRequest):
                 # Activity: one querying event per council model. (Council querying is
                 # parallel inside council.py, so these are emitted up front rather than
                 # interleaved with each response.)
-                for m in COUNCIL_MODELS:
+                for m in config.get_council_models():
                     yield act(
                         "model_querying",
                         f"Querying {_model_display(m)}...",
                         reasoning="Asking each council model to analyse the data and research independently, so their conclusions stay unbiased by one another.",
                     )
                 stage1_results = await stage1_collect_responses(enriched_prompt)
+                # Hard stop when the council is completely unavailable — a report
+                # synthesised from nothing is worse than a clear error.
+                if not stage1_results:
+                    msg = ("All council models failed to respond. Check your OpenRouter "
+                           "API key, credit balance, and council model ids in Settings.")
+                    update_conversation_status(request.conversation_id, "error", error_message=msg)
+                    yield act("stage_error", msg)
+                    yield f"data: {json.dumps({'type': 'error', 'message': msg})}\n\n"
+                    return
+                if len(stage1_results) == 1:
+                    yield act(
+                        "council_degraded",
+                        "Only 1 council model responded — peer review is skipped-in-effect",
+                        reasoning="The report will rely on a single model's analysis. Check the other council model ids in Settings.",
+                    )
                 yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
                 # Activity: one responded event per model that answered, with char count.
                 for r in stage1_results:
@@ -934,6 +1426,11 @@ async def analyse(request: AnalyseRequest):
                     prediction_meta=prediction_meta,
                     prediction_suite=prediction_suite,
                 )
+                # Suggested deeper questions the user can one-click into a new run.
+                from .report_builder import generate_follow_ups
+                report["follow_ups"] = await generate_follow_ups(
+                    actual_question, stage3_result.get("response", "") if stage3_result else ""
+                )
                 yield f"data: {json.dumps({'type': 'report_complete', 'data': report})}\n\n"
                 yield act(
                     "report_built",
@@ -955,6 +1452,7 @@ async def analyse(request: AnalyseRequest):
                     report=report,
                     activity=activity_events,
                     prediction_charts=prediction_charts,
+                    df=data_df,
                 )
 
                 # Pipeline finished — mark complete so polling clients stop.
@@ -978,13 +1476,13 @@ async def analyse(request: AnalyseRequest):
                 context_prompt = _build_followup_prompt(actual_question, conversation, pipeline)
 
                 from .openrouter import query_model
-                from .config import CHAIRMAN_MODEL
-                response = await query_model(CHAIRMAN_MODEL, [{"role": "user", "content": context_prompt}])
+                chairman = config.get_chairman_model()
+                response = await query_model(chairman, [{"role": "user", "content": context_prompt}])
 
                 if response is None:
                     response = {"content": "Error: Chairman unavailable."}
 
-                chairman_response = {"model": CHAIRMAN_MODEL, "response": response.get("content", "")}
+                chairman_response = {"model": chairman, "response": response.get("content", "")}
 
                 # Persist followup as a lightweight assistant message
                 conv = storage.get_conversation(request.conversation_id)
@@ -1011,13 +1509,11 @@ async def analyse(request: AnalyseRequest):
 
 
 @app.post("/api/reanalyse")
-async def reanalyse(request: ReanalyseRequest):
+async def reanalyse(request: ReanalyseRequest, http_request: Request):
     """Re-run data analysis on filtered dataset. Returns updated charts and data segments only."""
     import pandas as pd
 
-    conversation = storage.get_conversation(request.conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = _owned(request.conversation_id, http_request)
 
     pipeline = conversation.get("pipeline", {})
     file_info = conversation.get("file")
@@ -1061,21 +1557,9 @@ async def reanalyse(request: ReanalyseRequest):
             if rng and col in df.columns and len(rng) == 2:
                 df = df[(df[col] >= rng[0]) & (df[col] <= rng[1])]
 
-    # Re-run analysis on filtered df (write to temp file to reuse analyse_file)
-    import tempfile
-    suffix = Path(file_path).suffix
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        if suffix == ".csv":
-            df.to_csv(tmp_path, index=False)
-        elif suffix in (".xls", ".xlsx"):
-            df.to_excel(tmp_path, index=False)
-        else:
-            df.to_json(tmp_path, orient="records")
-        filtered_result = analyse_file(tmp_path)
-    finally:
-        os.unlink(tmp_path)
+    # Re-run analysis on the filtered dataframe in memory.
+    from .data_analysis import analyse_df
+    filtered_result = analyse_df(df.reset_index(drop=True))
 
     if filtered_result.get("error"):
         raise HTTPException(status_code=400, detail="No rows match the selected filters")
@@ -1100,27 +1584,6 @@ async def reanalyse(request: ReanalyseRequest):
     return response
 
 
-@app.post("/api/extra-charts/{conversation_id}")
-async def extra_charts(conversation_id: str):
-    """Generate additional chart types (box plots, scatter matrix, correlation
-    heatmap, animated bubble) for the dashboard (4.4). Returns {charts}."""
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    file_info = conversation.get("file")
-    if not file_info or not file_info.get("path") or not os.path.exists(file_info["path"]):
-        raise HTTPException(status_code=404, detail="No dataset file for this conversation")
-
-    from .data_analysis import _load, build_extra_charts, _col_type
-    try:
-        df = _load(file_info["path"])
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Could not read dataset: {e}")
-
-    columns_info = [{"name": c, "type": _col_type(df[c])} for c in df.columns]
-    return {"charts": build_extra_charts(df, columns_info)}
-
-
 @app.get("/api/export-format")
 async def export_format():
     """Report which export format the server can produce so the UI can label the
@@ -1130,7 +1593,7 @@ async def export_format():
 
 
 @app.get("/api/export/{conversation_id}")
-async def export_report_endpoint(conversation_id: str, format: Optional[str] = None, mode: Optional[str] = None):
+async def export_report_endpoint(conversation_id: str, http_request: Request, format: Optional[str] = None, mode: Optional[str] = None):
     """Generate and return the stored report as a PDF, or an HTML file when the
     PDF toolchain (WeasyPrint/Pango/Cairo) is unavailable.
 
@@ -1138,13 +1601,11 @@ async def export_report_endpoint(conversation_id: str, format: Optional[str] = N
     the more-visual dashboard export — metrics, charts and data table (4.7)."""
     from .pdf_export import export_report
 
-    conversation = storage.get_conversation(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conversation = _owned(conversation_id, http_request)
 
     base = os.path.join(EXPORTS_DIR, conversation_id + ("-dashboard" if mode == "dashboard" else ""))
     try:
-        result = await export_report(conversation, base, force_html=(format == "html"), mode=mode)
+        result = await export_report(conversation, base, fmt=format, mode=mode)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {e}")
 
@@ -1164,22 +1625,12 @@ async def export_report_endpoint(conversation_id: str, format: Optional[str] = N
 
 def _find_upload(file_id: str) -> dict | None:
     """Locate an uploaded file by file_id prefix."""
-    if not file_id:
+    if not file_id or not storage.is_valid_id(file_id):
         return None
     for name in os.listdir(UPLOADS_DIR):
         if name.startswith(file_id):
             return {"path": os.path.join(UPLOADS_DIR, name), "filename": name}
     return None
-
-
-def _summarise_for_research(data_summary: dict | None) -> str:
-    # Brief topical hint only — deliberately omit the row count and "Dataset with
-    # N rows" phrasing, which makes Perplexity cite ML-dataset catalogues instead
-    # of the question's actual subject.
-    if not data_summary:
-        return ""
-    cols = ", ".join(c["name"] for c in data_summary.get("columns", []))
-    return f"The user's data has these fields: {cols}."
 
 
 def _build_followup_prompt(question: str, conversation: dict, pipeline: dict) -> str:
@@ -1213,6 +1664,7 @@ def _save_enriched_conversation(
     report: dict,
     activity: list | None = None,
     prediction_charts: list | None = None,
+    df=None,
 ):
     conv = storage.get_conversation(conversation_id)
     conv["mode"] = mode
@@ -1267,6 +1719,31 @@ def _save_enriched_conversation(
         "activity": activity or [],
         "prediction_charts": prediction_charts or [],
     }
+
+    # Every research/AI run also produces a live dashboard: auto charts + the
+    # research findings and chairman synthesis pinned as insight widgets. The
+    # user then iterates on it via the dashboard assistant (update-in-place).
+    # An existing dashboard is preserved — its edits must never be clobbered.
+    if not conv.get("dashboard"):
+        from .dashboard import augment_with_research_analytics, build_dashboard_spec, insights_from_pipeline
+        conv["dashboard"] = build_dashboard_spec(
+            data_summary,
+            serialisable_charts,
+            title=conv.get("title", "Dashboard"),
+            insights=insights_from_pipeline(internet_findings, stage3_result),
+            has_rows=bool(conv.get("file")),
+            df=df,
+        )
+        # Pin the run's own analytics: source/council/confidence metric cards
+        # and the prediction summary. This is what makes a research dashboard
+        # more than a data dashboard.
+        augment_with_research_analytics(conv["dashboard"], internet_findings, stage1_results, report)
+        # Data-mode runs also get a deterministic statistical read of the dataset.
+        if df is not None and data_summary:
+            from .dashboard import analyze_dataset, _upsert_insight
+            stat_text = analyze_dataset(df, data_summary.get("columns", []), data_summary.get("statistics", {}))
+            if stat_text:
+                _upsert_insight(conv["dashboard"]["widgets"], "Statistical analysis", stat_text)
 
     # Also add a full assistant message (strips dataframe from charts already done above)
     conv["messages"].append({

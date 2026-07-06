@@ -12,11 +12,7 @@ provides the search plan, the single-search call, and the combiner.
 import re
 from datetime import datetime
 from .openrouter import query_model
-from .config import DEBUG
-
-# perplexity/sonar-pro is the most capable general online/search model on
-# OpenRouter that still returns plain prose. Verified present in the catalogue.
-_MODEL = "perplexity/sonar-pro"
+from .config import DEBUG, get_research_model
 
 _SYSTEM_MSG = (
     "You are a web research assistant with live internet access. Search the web "
@@ -28,89 +24,110 @@ _SYSTEM_MSG = (
 def build_search_plan(question: str, entities: list[str] | None = None) -> list[dict]:
     """Return the ordered list of searches to run, each with its query, the
     human-readable reasoning shown in the Activity Panel, and a per-search system
-    instruction that pushes Perplexity to return concrete numbers.
+    instruction that pushes the research model to return concrete numbers.
 
-    Today's date is injected into every query and live-data search so the model
-    grounds answers in the current state of the world rather than stale training
-    knowledge — the recurring failure mode was the model claiming it had "no live
-    data". When `entities` (e.g. the top dataset entities) are supplied they are
-    appended to the probability/results searches so the model targets the actual
-    contenders rather than parsing the raw question (query enrichment, 3.1)."""
+    The plan is topic-GENERIC (current facts → established research → forecasts)
+    so deep research works for any subject, not one domain. Today's date is
+    injected so the model grounds answers in the current state of the world
+    rather than stale training knowledge. When `entities` (the top dataset
+    entities) are supplied they are appended to the forecast search so the model
+    targets the actual subjects of the data."""
     topic = question.strip()
     now = datetime.utcnow()
     today_date = now.strftime("%B %d, %Y")
-    today_month = now.strftime("%B")
-    today_year = now.year
-    # Up to 6 entity names appended to targeted searches.
+    # Up to 6 entity names appended to the targeted forecast search.
     ent = " ".join((entities or [])[:6]).strip()
     ent_suffix = f" {ent}" if ent else ""
     return [
-        # Search 1 — live scores and results (Fix 3).
+        # Search 1 — the current state of the subject.
         {
             "purpose": "live_data",
-            "query": f"{topic} scores results today {today_date} latest{ent_suffix}",
+            "query": f"{topic} latest data news {today_date}",
             "system": (
-                "Find the actual scores and results for this subject played so far. "
-                "Include scorelines and figures. Even a YouTube title with a score "
-                "counts as evidence. Report exactly what you find."
+                "Find the most current, dated facts and figures on this subject. "
+                "Include concrete numbers, recent events, results and dates. "
+                "Report exactly what you find."
             ),
             "started_reasoning": (
-                "Searching for live scores and results to confirm the current state of play right now."
+                "Searching for the latest data and news to ground the analysis in the current state of the subject."
             ),
             "complete_reasoning": (
-                "Gathered live scores. Now checking which entities have been eliminated or advanced."
+                "Gathered the current picture. Now looking for established research and expert analysis."
             ),
         },
-        # Search 2 — eliminated and advancing entities (Fix 3).
+        # Search 2 — established research and expert analyses.
         {
             "purpose": "existing_research",
-            "query": f"{topic} eliminated qualified advancing {today_month} {today_year}",
+            "query": f"{topic} analysis expert research findings",
             "system": (
-                "Which specific entities have been eliminated and which have advanced? "
-                "Report names and round. Use any available source including YouTube, "
-                "Reddit, and news sites."
+                "Find established research, expert analyses and studies on this "
+                "subject. Prefer sources with concrete numbers, statistics and "
+                "clear conclusions."
             ),
             "started_reasoning": (
-                "Searching for which entities are eliminated and which have advanced to later rounds."
+                "Searching for expert analyses and published research on the subject."
             ),
             "complete_reasoning": (
-                "Compiled the eliminated/advancing picture. Now gathering current win probabilities."
+                "Compiled expert findings. Now gathering forecasts and consensus estimates."
             ),
         },
-        # Search 3 — current win probabilities / odds (Fix 3).
+        # Search 3 — forecasts / probabilities / market consensus.
         {
             "purpose": "consensus",
-            "query": f"{topic} win probability odds {today_date} who will win{ent_suffix}",
+            "query": f"{topic} forecast projections estimates {now.year}{ent_suffix}",
             "system": (
-                "Find specific win probability percentages or betting odds for each entity. "
-                "Numbers required. Return all percentages you find."
+                "Find forecasts, projections, probability estimates or market "
+                "consensus for this subject. Numbers required — return all "
+                "percentages and figures you find."
             ),
             "started_reasoning": (
-                "Gathering expert win probabilities and market odds to cross-reference with the dataset."
+                "Gathering forecasts and consensus estimates to cross-reference with the dataset."
             ),
             "complete_reasoning": (
-                "Compiled probability estimates and consensus forecasts from the available sources."
-            ),
-        },
-        # Search 4 — live match data from real-time aggregator sites (Fix 2).
-        {
-            "purpose": "live_aggregator",
-            "query": f"{topic} results {today_date} sofascore fotmob soccerway livescore",
-            "system": (
-                "Search specifically on live football data sites like SofaScore, "
-                "FotMob, Soccerway, or LiveScore for match results and standings. "
-                "These sites update in real time. Return any match scores, group "
-                "standings, or results you find. Even partial data is valuable."
-            ),
-            "started_reasoning": (
-                "Checking real-time football data aggregators (SofaScore, FotMob, Soccerway, "
-                "LiveScore) for live scores and standings the official sources may lag on."
-            ),
-            "complete_reasoning": (
-                "Gathered live match data from real-time aggregator sites."
+                "Compiled forecast and consensus estimates from the available sources."
             ),
         },
     ]
+
+
+async def plan_searches(question: str, entities: list[str] | None = None,
+                        data_hint: str = "") -> list[dict]:
+    """Upgrade the static plan with LLM-crafted queries: the fast model writes
+    three targeted web-search queries for THIS question (and dataset), which
+    beats keyword-mashing the raw question. The static skeleton keeps its
+    purposes, system prompts and activity reasonings; only the query strings
+    are replaced. Any failure falls back to the static plan untouched."""
+    from .openrouter import query_model
+    from .config import get_fast_model
+    import json as _json
+
+    plan = build_search_plan(question, entities)
+    prompt = (
+        "Write exactly 3 web search queries (plain keyword queries, no operators) "
+        "to research this question. Query 1: the CURRENT state / latest news. "
+        "Query 2: established research and expert analysis. Query 3: forecasts / "
+        "projections / consensus estimates.\n"
+        f"Question: {question}\n"
+        + (f"The user's dataset covers: {data_hint}\n" if data_hint else "")
+        + (f"Key entities: {', '.join(entities[:6])}\n" if entities else "")
+        + 'Return ONLY a JSON array of 3 strings.'
+    )
+    try:
+        resp = await query_model(get_fast_model(), [{"role": "user", "content": prompt}],
+                                 timeout=25.0, max_tokens=300)
+        raw = (resp or {}).get("content", "") if resp else ""
+        m = re.search(r"\[.*\]", raw, flags=re.DOTALL)
+        queries = _json.loads(m.group(0)) if m else []
+        queries = [str(q).strip() for q in queries if isinstance(q, str) and q.strip()]
+        if len(queries) == 3:
+            for step, q in zip(plan, queries):
+                step["query"] = q
+            if DEBUG:
+                print(f"[research] planner queries: {queries}", flush=True)
+    except Exception as e:
+        if DEBUG:
+            print(f"[research] planner failed, using static plan: {e}", flush=True)
+    return plan
 
 
 # Patterns that signal an event is already under way — scored results, knockout
@@ -171,8 +188,10 @@ def extract_confirmed_facts(searches: list[dict]) -> str:
 
 # Domain authority tiers for source quality scoring (3.2).
 _AUTHORITATIVE_DOMAINS = (
-    "fifa.com", "espn.com", "bbc.com", "bbc.co.uk", "reuters.com",
-    "apnews.com", "skysports.com", "theguardian.com", "uefa.com",
+    "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "theguardian.com",
+    "ft.com", "economist.com", "bloomberg.com", "wsj.com", "nytimes.com",
+    "statista.com", "oecd.org", "worldbank.org", "imf.org", "nature.com",
+    ".gov", "fifa.com", "espn.com", "skysports.com", "uefa.com",
 )
 
 
@@ -248,24 +267,34 @@ def detect_event_status(searches: list[dict], today_date: str) -> str:
 
     if confirmed_evidence:
         return (
-            f"CONFIRMED: The event is currently in progress as of {today_date}. "
+            f"CONFIRMED: There are current, dated developments on this subject as of {today_date}. "
             f"Evidence from internet sources:\n"
             + "\n".join(confirmed_evidence[:5])
-            + "\n\nYou MUST acknowledge this in your response. Do NOT state the "
-            "event has not started when evidence above proves it has."
+            + "\n\nGround your analysis in this current evidence. Do NOT claim "
+            "nothing has happened yet when the evidence above shows otherwise."
         )
     return (
-        f"Internet sources did not return clear live results for {today_date}. "
+        f"Internet sources did not return clearly dated current results for {today_date}. "
         f"However, always provide your best analysis from the dataset."
     )
 
 
 async def run_single_search(query: str, system: str | None = None) -> dict:
-    """Run one Perplexity search. Always returns a structured dict; on failure it
-    returns empty content + error=True so the pipeline continues.
+    """Run one web search with a single retry on failure/empty response.
+    Always returns a structured dict; on repeated failure it returns empty
+    content + error=True so the pipeline continues.
 
     `system` optionally overrides/augments the default system message so each
     search can demand the specific kind of numbers it needs."""
+    result = await _search_once(query, system)
+    if result.get("error"):
+        if DEBUG:
+            print(f"[SEARCH] retrying failed search: {query[:80]}", flush=True)
+        result = await _search_once(query, system)
+    return result
+
+
+async def _search_once(query: str, system: str | None = None) -> dict:
     prompt = (
         f"Search the web and summarise current, factual information for this query:\n\n{query}\n\n"
         "Provide a concise summary of the most relevant findings, including any statistics, "
@@ -282,7 +311,7 @@ async def run_single_search(query: str, system: str | None = None) -> dict:
         print(f"\n[SEARCH] Query: {query}", flush=True)
         print(f"[SEARCH] System: {system_msg[:200]}", flush=True)
     try:
-        response = await query_model(_MODEL, messages, timeout=60.0)
+        response = await query_model(get_research_model(), messages, timeout=60.0)
     except Exception as e:
         print(f"[research] search failed: {e}", flush=True)
         return {"content": "", "sources": [], "error": True}
@@ -318,7 +347,6 @@ _PURPOSE_LABELS = {
     "existing_research": "EXISTING RESEARCH AND EXPERT ANALYSES",
     "live_data": "CURRENT LIVE DATA",
     "consensus": "PROBABILITY ESTIMATES AND CONSENSUS",
-    "live_aggregator": "LIVE MATCH DATA (AGGREGATOR SITES)",
 }
 
 

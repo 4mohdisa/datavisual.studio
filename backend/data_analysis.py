@@ -147,20 +147,30 @@ def _detect_and_build_charts(df: pd.DataFrame) -> list[dict]:
 
     charts = []
 
-    # Time + numeric → line chart (one chart per numeric column, max 3)
+    # Time + numeric → line chart (one chart per numeric column, max 3).
+    # With a categorical column present, draw one line per category (top 8 by
+    # mean) instead of one line per raw row — otherwise multi-entity datasets
+    # render as unreadable spaghetti.
     if datetime_cols and numeric_cols:
         time_col = datetime_cols[0]
+        cat_col = categorical_cols[0] if categorical_cols else None
         for num_col in numeric_cols[:3]:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=df[time_col],
-                y=df[num_col],
-                mode="lines",
-                name=num_col,
-                line=dict(color="rgb(100,160,255)"),
-            ))
-            fig.update_layout(title=f"{num_col} over time", xaxis_title=time_col, yaxis_title=num_col)
-            charts.append({"title": f"{num_col} over time", "type": "line", "plotly_json": _fig_json(fig)})
+            if cat_col:
+                top_cats = df.groupby(cat_col)[num_col].mean().sort_values(ascending=False).head(8).index
+                for cat in top_cats:
+                    sub = df[df[cat_col] == cat].groupby(time_col, as_index=False)[num_col].mean().sort_values(time_col)
+                    fig.add_trace(go.Scatter(x=sub[time_col], y=sub[num_col], mode="lines+markers", name=str(cat)))
+                title = f"{num_col} over time by {cat_col}"
+            else:
+                series = df.groupby(time_col, as_index=False)[num_col].mean().sort_values(time_col)
+                fig.add_trace(go.Scatter(
+                    x=series[time_col], y=series[num_col], mode="lines",
+                    name=num_col, line=dict(color="rgb(100,160,255)"),
+                ))
+                title = f"{num_col} over time"
+            fig.update_layout(title=title, xaxis_title=time_col, yaxis_title=num_col)
+            charts.append({"title": title, "type": "line", "plotly_json": _fig_json(fig)})
         return charts
 
     # Two numeric → scatter with correlation
@@ -449,81 +459,6 @@ def build_data_excerpt(df: pd.DataFrame, columns_info: list[dict], statistics: d
         return ""
 
 
-def build_extra_charts(df: pd.DataFrame, columns_info: list[dict]) -> list[dict]:
-    """Additional chart types the auto-detection skips (4.4): box plots, a scatter
-    matrix of the most-variable numeric columns, a correlation heatmap, and an
-    animated bubble chart when a time + 2 numeric + 1 categorical layout exists.
-    Each chart is built defensively so one failure never blocks the others."""
-    numeric_cols = [c["name"] for c in columns_info if c["type"] == "numeric"]
-    cat_cols = [c["name"] for c in columns_info if c["type"] == "categorical"]
-    datetime_cols = [c["name"] for c in columns_info if c["type"] == "datetime"]
-    charts: list[dict] = []
-
-    # Rank numeric columns by variance to pick the most informative.
-    def top_numeric(n):
-        scored = []
-        for c in numeric_cols:
-            try:
-                scored.append((float(df[c].var()), c))
-            except Exception:
-                continue
-        scored.sort(reverse=True)
-        return [c for _, c in scored[:n]]
-
-    # Box plots for the top numeric columns (one figure, side by side).
-    try:
-        cols = top_numeric(6)
-        if cols:
-            fig = go.Figure()
-            for c in cols:
-                fig.add_trace(go.Box(y=df[c].dropna(), name=c, boxpoints="outliers"))
-            fig.update_layout(title="Box plots (distribution + outliers)", showlegend=False)
-            charts.append({"title": "Box plots", "type": "box", "plotly_json": _fig_json(fig)})
-    except Exception as e:
-        print(f"[extra_charts] box failed: {e}", flush=True)
-
-    # Scatter matrix of the top numeric columns.
-    try:
-        cols = top_numeric(5)
-        if len(cols) >= 2:
-            fig = px.scatter_matrix(df, dimensions=cols, color=cat_cols[0] if cat_cols else None)
-            fig.update_layout(title="Scatter matrix (top numeric columns)")
-            fig.update_traces(diagonal_visible=False, showupperhalf=False, marker=dict(size=3))
-            charts.append({"title": "Scatter matrix", "type": "scatter_matrix", "plotly_json": _fig_json(fig)})
-    except Exception as e:
-        print(f"[extra_charts] scatter_matrix failed: {e}", flush=True)
-
-    # Correlation heatmap.
-    try:
-        cols = top_numeric(10)
-        if len(cols) > 2:
-            corr = df[cols].corr()
-            fig = go.Figure(go.Heatmap(z=corr.values, x=cols, y=cols, colorscale="RdBu", zmid=0,
-                                       text=corr.round(2).values, texttemplate="%{text}"))
-            fig.update_layout(title="Correlation heatmap")
-            charts.append({"title": "Correlation heatmap", "type": "heatmap", "plotly_json": _fig_json(fig)})
-    except Exception as e:
-        print(f"[extra_charts] heatmap failed: {e}", flush=True)
-
-    # Animated bubble chart (time + 2 numeric + 1 categorical).
-    try:
-        if datetime_cols and len(numeric_cols) >= 2 and cat_cols:
-            time_col = datetime_cols[0]
-            x, y = top_numeric(2)
-            frame = df.assign(_period=pd.to_datetime(df[time_col]).dt.year)
-            fig = px.scatter(
-                frame.dropna(subset=[x, y]), x=x, y=y, size=numeric_cols[0],
-                color=cat_cols[0], animation_frame="_period", hover_name=cat_cols[0],
-                size_max=40,
-            )
-            fig.update_layout(title=f"{y} vs {x} over time (animated)")
-            charts.append({"title": "Animated bubble chart", "type": "bubble", "plotly_json": _fig_json(fig)})
-    except Exception as e:
-        print(f"[extra_charts] bubble failed: {e}", flush=True)
-
-    return charts
-
-
 def _detect_anomalies(df, columns_info, numeric_cols, max_per_col: int = 5, max_total: int = 20) -> list[dict]:
     """Flag rows whose numeric value sits > 3 IQR from the column median (6.5).
     Returns [{entity, column, value}] tagged with an entity name when available."""
@@ -557,8 +492,13 @@ def _detect_anomalies(df, columns_info, numeric_cols, max_per_col: int = 5, max_
 
 
 def analyse_file(path: str) -> dict[str, Any]:
-    df = _load(path)
+    return analyse_df(_load(path))
 
+
+def analyse_df(df: pd.DataFrame) -> dict[str, Any]:
+    """Profile a dataframe: summary stats, quality notes, charts, data excerpt.
+    Shared by the upload/analyse path (via analyse_file) and /api/reanalyse,
+    which filters the dataframe in memory."""
     # Empty / malformed: no data rows after the header.
     if df is None or len(df) == 0:
         return {"error": "File appears empty or has no data rows"}

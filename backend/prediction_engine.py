@@ -36,16 +36,6 @@ class PredictionResult:
     model_agreement: float = 1.0
 
 
-@dataclass
-class PredictionSuite:
-    """The full set of model outputs surfaced to the report/frontend."""
-    model_a: list[PredictionResult]   # ELO Monte Carlo
-    model_b: list[PredictionResult]   # ELO-Poisson / Dixon-Coles
-    model_c: list[PredictionResult]   # XGBoost (empty list when unavailable)
-    ensemble: list[PredictionResult]  # average of available math models (A+B+C)
-    combined: list[PredictionResult]  # ensemble + internet + council
-
-
 # ---------------------------------------------------------------------------
 # Pure primitives
 # ---------------------------------------------------------------------------
@@ -142,11 +132,6 @@ def _run_knockout(qualifiers: list[str], elos: dict[str, float], match_fn) -> Op
     return remaining[0] if remaining else None
 
 
-# Seeding modes (2.1). "historical" would use the real 2026 draw — unavailable
-# here, so it falls back to pot-based seeding.
-SEEDING_MODES = ("seeded", "random", "historical")
-
-
 def _simulate_bracket_once(team_list: list[str], elos: dict[str, float], match_fn,
                            group_size: int, seeding: str = "seeded") -> Optional[str]:
     """One full tournament: group stage (top 2 advance) → knockout bracket."""
@@ -210,12 +195,6 @@ try:
     from scipy.stats import poisson as _scipy_poisson
 except Exception:  # scipy missing — fall back to a stdlib Poisson sampler
     _scipy_poisson = None
-
-
-def poisson_available() -> bool:
-    """True when SciPy's Poisson sampler is importable (Model B is fully enabled).
-    A stdlib fallback keeps Model B working even when this returns False."""
-    return _scipy_poisson is not None
 
 
 def _poisson_rvs(lam: float) -> int:
@@ -572,28 +551,6 @@ def _dataset_distribution_inputs(
 
     kind = "elo" if (elo_col and elo_col in df.columns) else "softmax"
     return kind, values, col
-
-
-def extract_dataset_probs(
-    df: Any,
-    columns_info: list[dict],
-    n_simulations: int = 1000,
-    top_n: int = _DATASET_TOP_N,
-) -> tuple[dict[str, float], list[str], str]:
-    """Derive a single probability distribution from the uploaded dataset (the
-    legacy single-model path, retained for the baseline/charts callers).
-
-    Returns (probs, entity_names, method). Falls back to ({}, [], "none") when no
-    usable column exists.
-    """
-    kind, values, col = _dataset_distribution_inputs(df, columns_info, top_n)
-    if kind == "none":
-        return {}, [], "none"
-    if kind == "elo":
-        probs = run_monte_carlo_tournament(values, n_simulations)
-        return probs, list(values.keys()), f"elo_monte_carlo({col})"
-    probs = _softmax_normalise(values)
-    return probs, list(values.keys()), f"softmax({col})"
 
 
 # --- Form index (Improvement 5) --------------------------------------------

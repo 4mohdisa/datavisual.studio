@@ -6,7 +6,15 @@ Built by Mohammed Isa (mohdisa233@gmail.com)
 
 ## What it does
 
-- Upload CSV, Excel, or JSON datasets
+- Upload CSV, Excel, or JSON datasets — or connect directly to a SQL database
+  (PostgreSQL, MySQL, SQLite) or a REST API, Power BI-style
+- Build a live web dashboard from any dataset in one click (no AI run):
+  metric cards, auto-generated interactive charts, entity comparison, sortable
+  data table, CSV/HTML export
+- Edit dashboards by chatting — "add a pie of revenue by product", "remove the
+  histogram", "research this topic and pin the findings". Changes apply to the
+  existing dashboard in place; research runs also feed their findings and
+  synthesis into the dashboard as insight cards
 - The platform profiles your data, auto-generates interactive charts, and searches the internet for current context
 - Four AI models (via OpenRouter) analyse everything independently and review each other's reasoning
 - A chairman model produces a synthesised final answer
@@ -26,9 +34,11 @@ Built by Mohammed Isa (mohdisa233@gmail.com)
 Backend:
 ```bash
 uv sync
-cp .env.example .env
-# Add your OPENROUTER_API_KEY to .env
 ```
+
+You don't need a `.env` file — add your OpenRouter API key from the app's
+Settings dialog (it opens automatically on first launch). A `.env` with
+`OPENROUTER_API_KEY` still works as a fallback if you prefer.
 
 Frontend:
 ```bash
@@ -49,7 +59,7 @@ cd frontend
 npm run dev
 ```
 
-Open http://localhost:5173
+Open http://localhost:3000
 
 ## PDF export
 
@@ -62,7 +72,7 @@ Without these, export falls back to HTML automatically.
 ## Tech stack
 
 - **Backend:** FastAPI, Python 3.10+, pandas, Plotly, WeasyPrint, OpenRouter API
-- **Frontend:** React, Vite, Tailwind CSS, react-plotly.js
+- **Frontend:** Next.js 16 (App Router), React 19, Tailwind CSS, custom UI components, react-plotly.js
 
 ---
 
@@ -85,12 +95,18 @@ Without these, export falls back to HTML automatically.
 
 ---
 
-## ⚙️ Environment Variables
+## ⚙️ Configuration
+
+Open **Settings** (gear icon at the bottom of the sidebar) to set your own
+OpenRouter API key and pick the council, chairman, and research models.
+Settings are stored locally in `data/settings.json`, and the key is only ever
+sent to OpenRouter.
+
+Environment variables (optional fallback):
 
 ```env
-OPENROUTER_API_KEY=sk-or-v1-...     # Required
+OPENROUTER_API_KEY=sk-or-v1-...     # Fallback if not set in Settings
 DATAVISUAL_DEBUG=false              # Optional: enable debug logging
-CRON_SECRET=...                     # Optional: for future cron jobs
 ```
 
 ---

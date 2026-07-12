@@ -55,6 +55,9 @@ def isolated_data(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("PROXY_SHARED_SECRET", raising=False)
     monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    # Fixed key-encryption secret so crypto is deterministic and never writes .env.
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key-hermetic")
+    monkeypatch.setattr("backend.crypto._secret_cache", None, raising=False)
     return tmp_path
 
 

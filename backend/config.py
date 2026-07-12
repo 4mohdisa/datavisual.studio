@@ -62,9 +62,9 @@ _settings = _load_settings()
 
 def save_settings(patch: dict) -> None:
     """Merge non-None fields into data/settings.json and the in-memory copy."""
+    from .atomic import atomic_write_json
     _settings.update({k: v for k, v in patch.items() if v is not None})
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(_settings, indent=2))
+    atomic_write_json(SETTINGS_PATH, _settings)
 
 
 def _ctx_user():
@@ -79,7 +79,8 @@ def get_api_key() -> str | None:
     mode (no identity, local dev) falls back to settings.json / env."""
     user = _ctx_user()
     if user is not None:
-        return (user.get("settings") or {}).get("openrouter_api_key") or None
+        from .crypto import decrypt
+        return decrypt((user.get("settings") or {}).get("openrouter_api_key")) or None
     return _settings.get("openrouter_api_key") or os.getenv("OPENROUTER_API_KEY")
 
 
@@ -103,7 +104,8 @@ def get_gemini_api_key() -> str | None:
     """Gemini key — same per-user policy as get_api_key."""
     user = _ctx_user()
     if user is not None:
-        return (user.get("settings") or {}).get("gemini_api_key") or None
+        from .crypto import decrypt
+        return decrypt((user.get("settings") or {}).get("gemini_api_key")) or None
     return _settings.get("gemini_api_key") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 

@@ -78,10 +78,26 @@ EXPORTS_DIR = "data/exports"
 Path(UPLOADS_DIR).mkdir(parents=True, exist_ok=True)
 Path(EXPORTS_DIR).mkdir(parents=True, exist_ok=True)
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Encrypt any plaintext BYO API keys on boot (idempotent). Best-effort — a
+    # failure here must never stop the API from starting.
+    try:
+        from .crypto import migrate_user_keys
+        migrate_user_keys()
+    except Exception as e:  # pragma: no cover
+        print(f"⚠️  key migration skipped: {e}")
+    yield
+
+
 app = FastAPI(
     title="Datavisual.studio API",
     version="1.0.0",
     description="Multi-model AI prediction platform API",
+    lifespan=lifespan,
 )
 
 # Compress responses (5.2) — large report/dataset payloads shrink significantly.
@@ -279,12 +295,14 @@ async def get_account_settings(http_request: Request):
             "openrouter_key_masked": _mask(config.get_api_key()),
             "gemini_key_set": bool(config.get_gemini_api_key()),
         }
+    from .crypto import decrypt
     settings = user_settings(user)
+    openrouter = decrypt(settings.get("openrouter_api_key"))
     return {
         "scope": "user",
-        "openrouter_key_set": bool(settings.get("openrouter_api_key")),
-        "openrouter_key_masked": _mask(settings.get("openrouter_api_key")),
-        "gemini_key_set": bool(settings.get("gemini_api_key")),
+        "openrouter_key_set": bool(openrouter),
+        "openrouter_key_masked": _mask(openrouter),
+        "gemini_key_set": bool(decrypt(settings.get("gemini_api_key"))),
     }
 
 
@@ -306,8 +324,9 @@ async def validate_account_key(request: AccountSettingsRequest, http_request: Re
     """Check an OpenRouter key (provided, or the user's saved one) live."""
     import httpx
 
+    from .crypto import decrypt
     user = user_from_request(http_request)
-    key = (request.openrouter_api_key or "").strip() or user_settings(user).get("openrouter_api_key")
+    key = (request.openrouter_api_key or "").strip() or decrypt(user_settings(user).get("openrouter_api_key"))
     if not key and user is None:
         key = config.get_api_key()
     if not key:
@@ -805,8 +824,13 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
     else:
         raise HTTPException(status_code=400, detail="Provide a message or ops")
 
-    conv["title"] = dashboard.get("title", conv.get("title"))
-    storage.save_conversation(conv)
+    # Persist under the per-conversation lock, re-reading the freshest record so
+    # a concurrent write (e.g. a share mint) isn't clobbered. The async editor
+    # work above is finished, so the lock is held only for a fast sync save.
+    def _apply(fresh: dict) -> None:
+        fresh["dashboard"] = dashboard
+        fresh["title"] = dashboard.get("title", fresh.get("title"))
+    storage.update_conversation(conversation_id, _apply)
     return {"reply": reply, "dashboard": dashboard}
 
 
@@ -836,10 +860,10 @@ def _load_sources() -> dict:
 
 
 def _save_source(file_id: str, cfg: dict) -> None:
+    from .atomic import atomic_write_json
     sources = _load_sources()
     sources[file_id] = cfg
-    _SOURCES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _SOURCES_PATH.write_text(json.dumps(sources, indent=2))
+    atomic_write_json(_SOURCES_PATH, sources)
 
 
 def _run_source_import(cfg: dict):

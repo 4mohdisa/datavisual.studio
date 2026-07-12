@@ -44,8 +44,8 @@ def _load() -> dict:
 
 
 def _save(users: dict) -> None:
-    USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    USERS_PATH.write_text(json.dumps(users, indent=2))
+    from .atomic import atomic_write_json
+    atomic_write_json(USERS_PATH, users)
 
 
 def get_or_create_user(clerk_id: str, email: Optional[str] = None, name: Optional[str] = None) -> dict:
@@ -80,8 +80,13 @@ def update_user_settings(clerk_id: str, patch: dict) -> dict:
         user = users.get(clerk_id)
         if user is None:
             raise KeyError(clerk_id)
+        from .crypto import encrypt
         settings = user.setdefault("settings", {})
-        settings.update({k: v for k, v in patch.items() if v is not None})
+        for k, v in patch.items():
+            if v is None:
+                continue
+            # API keys are encrypted at rest; everything else stored as-is.
+            settings[k] = encrypt(v) if k.endswith("_api_key") else v
         _save(users)
         return user
 

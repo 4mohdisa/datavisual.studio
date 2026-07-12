@@ -5,9 +5,48 @@ import os
 import re
 import secrets
 import threading
-from typing import List, Dict, Any, Optional
+from contextlib import contextmanager
+from typing import Callable, List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR
+from .atomic import atomic_write_json
+
+# Per-conversation reentrant locks. A concurrent read-modify-write on the SAME
+# record (e.g. "mint a share while a sync save is in flight") would otherwise
+# lose an update — the later save clobbers the earlier one's field. Callers
+# wrap the whole load→mutate→save cycle in `conversation_lock(cid)`; heavy async
+# work must stay OUTSIDE the lock (see update_conversation / main.py sites).
+_conv_locks: Dict[str, threading.RLock] = {}
+_conv_locks_guard = threading.Lock()
+
+
+def conversation_lock(conversation_id: str) -> threading.RLock:
+    with _conv_locks_guard:
+        lock = _conv_locks.get(conversation_id)
+        if lock is None:
+            lock = threading.RLock()
+            _conv_locks[conversation_id] = lock
+        return lock
+
+
+@contextmanager
+def locked_conversation(conversation_id: str):
+    """Hold the per-id lock for a synchronous read-modify-write. Do NOT `await`
+    inside this block — the lock is a threading lock and would stall the loop."""
+    with conversation_lock(conversation_id):
+        yield
+
+
+def update_conversation(conversation_id: str, mutator: Callable[[dict], None]) -> Optional[dict]:
+    """Atomically apply `mutator` to the freshest on-disk record under its lock.
+    Re-reads inside the lock so it never clobbers a concurrent writer's field."""
+    with conversation_lock(conversation_id):
+        conv = get_conversation(conversation_id)
+        if conv is None:
+            return None
+        mutator(conv)
+        save_conversation(conv)
+        return conv
 
 # Conversation ids are used to build file paths (here and in the export
 # endpoint), so they must never contain path separators or other junk. This is
@@ -65,10 +104,7 @@ def save_conversation(conversation: Dict[str, Any]):
         conversation: Conversation dict to save
     """
     ensure_data_dir()
-
-    path = get_conversation_path(conversation['id'])
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
+    atomic_write_json(get_conversation_path(conversation['id']), conversation)
 
 
 def list_conversations() -> List[Dict[str, Any]]:
@@ -171,14 +207,15 @@ def _load_shares() -> Dict[str, str]:
 
 def _save_shares(shares: Dict[str, str]) -> None:
     ensure_data_dir()
-    with open(SHARES_PATH, "w") as f:
-        json.dump(shares, f, indent=2)
+    atomic_write_json(SHARES_PATH, shares)
 
 
 def create_share(conversation_id: str) -> Optional[str]:
     """Enable public sharing for a conversation, returning its share token.
-    Idempotent — an already-shared conversation returns its existing token."""
-    with _shares_lock:
+    Idempotent — an already-shared conversation returns its existing token.
+    Holds the per-conversation lock so a concurrent dashboard save can't drop
+    the freshly-written share_id (re-reads the record inside the lock)."""
+    with conversation_lock(conversation_id), _shares_lock:
         conv = get_conversation(conversation_id)
         if conv is None:
             return None
@@ -195,7 +232,7 @@ def create_share(conversation_id: str) -> Optional[str]:
 
 def delete_share(conversation_id: str) -> None:
     """Revoke public sharing — drops the token from the index and the record."""
-    with _shares_lock:
+    with conversation_lock(conversation_id), _shares_lock:
         conv = get_conversation(conversation_id)
         if conv is None:
             return

@@ -114,6 +114,34 @@ export const api = {
   },
 
   /**
+   * Enable a public share link for a conversation (dashboard or research).
+   * Idempotent — returns the existing token if already shared.
+   */
+  async shareConversation(conversationId) {
+    const response = await fetch(`${API_BASE}/api/conversations/${conversationId}/share`, { method: 'POST' });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not create a share link');
+    }
+    return response.json();
+  },
+
+  /** Revoke a public share link. */
+  async unshareConversation(conversationId) {
+    const response = await fetch(`${API_BASE}/api/conversations/${conversationId}/share`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Could not revoke the link');
+    return response.json();
+  },
+
+  /** Fetch a read-only public share view by token (no auth). */
+  async getPublicShare(shareId) {
+    const response = await fetch(`${API_BASE}/api/public/${shareId}`);
+    if (response.status === 404) throw new Error('unavailable');
+    if (!response.ok) throw new Error('Failed to load shared view');
+    return response.json();
+  },
+
+  /**
    * Import data from an external source (SQL database or REST API).
    * Returns the same shape as uploadFile, so it plugs into the same flow.
    */

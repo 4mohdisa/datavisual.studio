@@ -530,31 +530,91 @@ async def get_conversation(conversation_id: str, http_request: Request):
     return _owned(conversation_id, http_request)
 
 
-@app.get("/api/dataset/{conversation_id}")
-async def get_dataset_rows(conversation_id: str, http_request: Request, limit: int = 2000):
-    """Return the raw rows of a conversation's uploaded dataset (capped) for the
-    interactive dashboard data table. Columns + records, JSON-safe."""
-    conversation = _owned(conversation_id, http_request)
+def _dataset_payload(conversation: dict, limit: int = 2000) -> Optional[dict]:
+    """Columns + JSON-safe rows for a conversation's dataset (capped), or None
+    when there is no readable file. Shared by the owner dataset endpoint and the
+    public share view."""
     file_info = conversation.get("file")
     if not file_info or not file_info.get("path") or not os.path.exists(file_info["path"]):
-        raise HTTPException(status_code=404, detail="No dataset file for this conversation")
-
+        return None
     from .data_analysis import _load
     import numpy as np
     try:
         df = _load(file_info["path"])
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Could not read dataset: {e}")
-
+    except Exception:
+        return None
     total = len(df)
     df = df.head(max(1, min(limit, 5000)))
-    # JSON-safe records (NaN → None).
     df = df.replace({np.nan: None})
     return {
         "columns": [str(c) for c in df.columns],
         "rows": df.to_dict(orient="records"),
         "total_rows": total,
         "returned_rows": len(df),
+    }
+
+
+@app.get("/api/dataset/{conversation_id}")
+async def get_dataset_rows(conversation_id: str, http_request: Request, limit: int = 2000):
+    """Return the raw rows of a conversation's uploaded dataset (capped) for the
+    interactive dashboard data table. Columns + records, JSON-safe."""
+    conversation = _owned(conversation_id, http_request)
+    payload = _dataset_payload(conversation, limit)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="No dataset file for this conversation")
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Public sharing — the owner toggles a share link; anyone with the token gets a
+# read-only view (no auth). The public payload is an explicit ALLOWLIST so that
+# server-only fields (file paths, connector credentials in file.source,
+# owner_id) can never leak.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/conversations/{conversation_id}/share")
+async def create_share_link(conversation_id: str, http_request: Request):
+    _owned(conversation_id, http_request)  # 404 for non-owners
+    token = storage.create_share(conversation_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    _track(http_request, "share", {"conversation_id": conversation_id})
+    return {"shared": True, "share_id": token}
+
+
+@app.delete("/api/conversations/{conversation_id}/share")
+async def delete_share_link(conversation_id: str, http_request: Request):
+    _owned(conversation_id, http_request)  # 404 for non-owners
+    storage.delete_share(conversation_id)
+    return {"shared": False}
+
+
+@app.get("/api/public/{share_id}")
+async def get_public_share(share_id: str):
+    """Read-only public view for a share token. No identity, no ownership —
+    the token IS the capability. Returns only presentation data."""
+    conv = storage.get_shared_conversation(share_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="This shared link is unavailable.")
+    dash = conv.get("dashboard") or {}
+    widgets = dash.get("widgets", [])
+    # Data minimization: the raw row-level dataset is only rendered by a table or
+    # comparison widget. If the owner curated the share down to aggregate charts,
+    # don't ship the full file (which may hold un-charted columns like PII).
+    shows_rows = any(w.get("kind") in ("table", "comparison") for w in widgets)
+    return {
+        "shared": True,
+        "mode": conv.get("mode"),
+        "title": dash.get("title") or conv.get("title") or "Dashboard",
+        "created_at": conv.get("created_at"),
+        # Allowlist: only presentation fields. `history` (assistant chat) and
+        # `file.source` (connector credentials) are deliberately excluded.
+        "dashboard": {
+            "title": dash.get("title"),
+            "widgets": widgets,
+            "last_synced": dash.get("last_synced"),
+        },
+        "dataset": _dataset_payload(conv) if shows_rows else None,
     }
 
 

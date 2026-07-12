@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { LayoutDashboard } from 'lucide-react';
+import { LayoutDashboard, Share2 } from 'lucide-react';
+import ShareModal from './ShareModal';
 import ReportSection from './ReportSection';
 import Charts from './Charts';
 import ComparisonTable from './ComparisonTable';
@@ -17,6 +18,7 @@ import ExportButton from './ExportButton';
 
 export default function Report({ report, conversationId }) {
   const [chartsData, setChartsData] = useState(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const router = useRouter();
 
   if (!report || report.type !== 'full_report') return null;
@@ -219,13 +221,26 @@ export default function Report({ report, conversationId }) {
               dashboard. Add or change charts by hand or by chatting.
             </p>
           </div>
-          <button
-            onClick={() => router.push(`/dashboard/${conversationId}`)}
-            className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 rounded-md bg-[var(--new-chat)] text-[var(--background)] text-sm font-medium hover:bg-[var(--new-chat-hover)] transition"
-          >
-            <LayoutDashboard size={16} strokeWidth={1.5} /> Open as dashboard
-          </button>
+          <div className="shrink-0 flex items-center gap-2">
+            <button
+              onClick={() => setShareOpen(true)}
+              title="Create a public, read-only link"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md border border-[var(--border-2)] text-sm text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--active)] transition"
+            >
+              <Share2 size={16} strokeWidth={1.5} /> Share
+            </button>
+            <button
+              onClick={() => router.push(`/dashboard/${conversationId}`)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md bg-[var(--new-chat)] text-[var(--background)] text-sm font-medium hover:bg-[var(--new-chat-hover)] transition"
+            >
+              <LayoutDashboard size={16} strokeWidth={1.5} /> Open as dashboard
+            </button>
+          </div>
         </div>
+      )}
+
+      {shareOpen && conversationId && (
+        <ShareModal conversationId={conversationId} onClose={() => setShareOpen(false)} />
       )}
     </div>
   );

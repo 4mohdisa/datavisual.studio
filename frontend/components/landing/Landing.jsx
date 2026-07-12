@@ -4,8 +4,8 @@ import {
   MessagesSquare, ShieldCheck, Database, Share2, Sliders, Table2,
   Users, LineChart, Building2, FlaskConical, MousePointerClick,
 } from 'lucide-react';
-import { DashboardMock } from './Blocks';
 import Reveal from './Reveal';
+import HeroReplay from './HeroReplay';
 import { LiveMonitorDemo, BuildDemo, ChatEditDemo, CouncilDemo } from './FeatureDemos';
 
 const SECTION = 'max-w-[1120px] mx-auto px-6';
@@ -147,7 +147,7 @@ export default function Landing() {
             </div>
           </div>
           <div className="dv-drift" style={{ animationDelay: '1.5s' }}>
-            <DashboardMock />
+            <HeroReplay />
           </div>
         </div>
       </header>

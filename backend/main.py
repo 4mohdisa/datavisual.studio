@@ -117,6 +117,17 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Baseline security response headers on the API (the browser mostly talks to
+    the Next proxy, which adds its own; these cover direct-to-backend calls like
+    the upload carve-out)."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
+
+
+@app.middleware("http")
 async def _proxy_secret_guard(request: Request, call_next):
     """When PROXY_SHARED_SECRET is set, only the Next.js proxy (which attaches
     the matching X-Proxy-Secret header) may reach the API — so a publicly
@@ -190,6 +201,13 @@ class ConversationMetadata(BaseModel):
 async def root():
     """Health check endpoint."""
     return {"status": "ok", "service": "Datavisual.studio API"}
+
+
+@app.get("/health")
+async def health():
+    """Liveness probe for the load balancer / deploy runbook first-boot check.
+    Exempt from the proxy-secret guard so an uptime monitor can reach it."""
+    return {"status": "ok", "version": app.version}
 
 
 class ErrorLogRequest(BaseModel):

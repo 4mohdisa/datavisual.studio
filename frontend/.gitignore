@@ -5,3 +5,9 @@ npm-debug.log*
 
 .env*.local
 public/export-preview.html
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
+.last-run.json

@@ -1,6 +1,10 @@
 import LegalPage, { Section } from '../../components/legal/LegalPage';
 
-export const metadata = { title: 'Privacy policy — datavisual.studio' };
+export const metadata = {
+  title: 'Privacy policy',
+  description: 'How datavisual.studio stores your data and handles your AI provider keys.',
+  alternates: { canonical: '/privacy' },
+};
 
 export default function PrivacyPage() {
   return (

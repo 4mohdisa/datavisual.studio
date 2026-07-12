@@ -2,10 +2,48 @@ import './globals.css';
 import { ClerkProvider } from '@clerk/nextjs';
 import ErrorBoundary from '../components/ErrorBoundary';
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://datavisual.studio';
+const DESCRIPTION =
+  'Turn any dataset into a live, editable dashboard — then let a council of AI models research your question on the live web and tell you what changed. Free: bring your own AI keys.';
+
 export const metadata = {
-  title: 'datavisual.studio',
-  description:
-    'Multi-model AI research and prediction platform — upload a dataset, ask anything, get a structured analytical report.',
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: 'datavisual.studio — living dashboards & AI-researched reports',
+    template: '%s · datavisual.studio',
+  },
+  description: DESCRIPTION,
+  applicationName: 'datavisual.studio',
+  keywords: [
+    'data visualization', 'live dashboard', 'BI tool', 'Power BI alternative',
+    'AI research', 'multi-model AI', 'LLM council', 'dashboard from CSV',
+    'connect database dashboard', 'deep research report', 'data analysis tool',
+  ],
+  authors: [{ name: 'Mohammed Isa', url: 'https://github.com/4mohdisa' }],
+  creator: 'Mohammed Isa',
+  alternates: { canonical: '/' },
+  openGraph: {
+    type: 'website',
+    siteName: 'datavisual.studio',
+    url: SITE_URL,
+    title: 'datavisual.studio — living dashboards & AI-researched reports',
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'datavisual.studio — living dashboards & AI-researched reports',
+    description: DESCRIPTION,
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, 'max-image-preview': 'large' },
+  },
+};
+
+export const viewport = {
+  themeColor: '#0f0f0f',
+  colorScheme: 'dark',
 };
 
 // Clerk appearance tuned to the product's oklch dark palette.

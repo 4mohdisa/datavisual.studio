@@ -1,6 +1,10 @@
 import LegalPage, { Section } from '../../components/legal/LegalPage';
 
-export const metadata = { title: 'Terms of use — datavisual.studio' };
+export const metadata = {
+  title: 'Terms of use',
+  description: 'The terms for using datavisual.studio — a free, bring-your-own-AI-keys product.',
+  alternates: { canonical: '/terms' },
+};
 
 export default function TermsPage() {
   return (

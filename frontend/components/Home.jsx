@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   LayoutDashboard, Telescope, BarChart3, Cable, X, Loader2,
-  ArrowRight, FileText, Database, Paperclip, ClipboardList,
+  ArrowRight, FileText, Database, Paperclip, ClipboardList, Sparkles,
 } from 'lucide-react';
 import Button from './ui/Button';
 import Input, { Select } from './ui/Input';
@@ -85,13 +85,33 @@ export default function Home({
   // A "Dig deeper" follow-up from a report lands here as ?q=… — prefill the
   // research composer so the user just hits Start.
   useEffect(() => {
-    const q = new URLSearchParams(window.location.search).get('q');
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q');
     if (q) {
       setQuestion(q);
       window.history.replaceState(null, '', '/studio');
     }
+    if (params.get('try') === 'sample') {
+      window.history.replaceState(null, '', '/studio');
+      handleTrySample();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [creating, setCreating] = useState(false);
+  const [sampling, setSampling] = useState(false);
+
+  // Zero-key onboarding — an instant dashboard from a bundled sample, no key.
+  const handleTrySample = async (sample) => {
+    setSampling(true);
+    setError('');
+    try {
+      const r = await api.sampleDashboard(sample);
+      router.push(`/dashboard/${r.conversation_id}`);
+    } catch (e) {
+      setError(e?.message || 'Could not open the sample dashboard');
+      setSampling(false);
+    }
+  };
   const [template, setTemplate] = useState('overview');
   const [focus, setFocus] = useState('');
 
@@ -215,14 +235,24 @@ export default function Home({
                 </div>
               </div>
             ) : (
-              <div className="flex flex-wrap gap-2 mt-auto">
-                <Button onClick={() => pickFile('main')} disabled={uploading}>
-                  {uploading ? <Loader2 size={15} className="animate-spin" /> : <BarChart3 size={15} strokeWidth={1.5} />}
-                  {uploading ? 'Uploading…' : 'Upload dataset'}
-                </Button>
-                <Button variant="outline" onClick={() => setConnectOpen(true)}>
-                  <Cable size={15} strokeWidth={1.5} /> Connect database / API
-                </Button>
+              <div className="flex flex-col gap-3 mt-auto">
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => pickFile('main')} disabled={uploading}>
+                    {uploading ? <Loader2 size={15} className="animate-spin" /> : <BarChart3 size={15} strokeWidth={1.5} />}
+                    {uploading ? 'Uploading…' : 'Upload dataset'}
+                  </Button>
+                  <Button variant="outline" onClick={() => setConnectOpen(true)}>
+                    <Cable size={15} strokeWidth={1.5} /> Connect database / API
+                  </Button>
+                </div>
+                <button
+                  onClick={() => handleTrySample()}
+                  disabled={sampling}
+                  className="inline-flex items-center gap-1.5 self-start text-[12.5px] text-[var(--accent)] hover:underline disabled:opacity-60"
+                >
+                  {sampling ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} strokeWidth={1.5} />}
+                  {sampling ? 'Opening…' : 'No data yet? Try it with a sample dataset — no key needed'}
+                </button>
               </div>
             )}
             {error && <div className="text-[12px] text-[var(--danger)]">{error}</div>}

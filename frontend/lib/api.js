@@ -61,6 +61,23 @@ export const api = {
   },
 
   /**
+   * Zero-key onboarding: build an instant dashboard from a bundled sample
+   * dataset (no upload, no AI key, no cost). Returns { conversation_id }.
+   */
+  async sampleDashboard(sample) {
+    const response = await fetch(`${API_BASE}/api/sample-dashboard`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sample: sample || null }),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not create the sample dashboard');
+    }
+    return response.json();
+  },
+
+  /**
    * Rebuild the widget spec for an existing record (migrates old dashboards).
    */
   async ensureDashboard(conversationId) {

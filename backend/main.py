@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import storage
+from .ratelimit import RateLimiter
 from .users import current_user_ctx, update_user_settings, user_from_request, user_settings
 from .council import generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
 from . import config
@@ -146,6 +147,26 @@ async def _proxy_secret_guard(request: Request, call_next):
         return await call_next(request)
     finally:
         current_user_ctx.reset(token)
+
+
+# Rate limiter for the expensive endpoints (per-user AND per-IP). Single replica.
+_rate_limiter = RateLimiter(
+    capacity=int(os.getenv("RATE_LIMIT_BURST", "20")),
+    refill_per_min=int(os.getenv("RATE_LIMIT_PER_MIN", "20")),
+)
+_RATE_LIMITED = ("/api/analyse", "/api/upload", "/api/upload-direct", "/api/connect", "/api/sample-dashboard")
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):
+    path = request.url.path
+    limited = path.endswith("/chat") and path.startswith("/api/dashboard") or path in _RATE_LIMITED
+    if request.method == "POST" and limited:
+        ip = (request.client.host if request.client else "?")
+        user = request.headers.get("x-clerk-user-id") or "anon"
+        if not _rate_limiter.check(f"u:{user}", f"ip:{ip}"):
+            return JSONResponse({"detail": "Too many requests — slow down a moment."}, status_code=429)
+    return await call_next(request)
 
 
 def _owned(conversation_id: str, http_request: Request) -> dict:
@@ -776,6 +797,66 @@ async def upload_file_direct(http_request: Request, file: UploadFile = File(...)
     if _verify_upload_ticket(http_request.headers.get("x-upload-ticket", "")) is None:
         raise HTTPException(status_code=401, detail="Invalid or expired upload ticket")
     return await _process_upload(file)
+
+
+# --- Zero-key onboarding: instant dashboard from a bundled sample -------------
+# Instant dashboards cost nothing and need NO AI key. The fastest path to value
+# for a new visitor, before any "add your key" friction.
+_SAMPLES = {
+    "saas": ("saas_revenue.csv", "SaaS revenue"),
+    "sales": ("store_sales.csv", "Store sales"),
+    "marketing": ("marketing.csv", "Marketing spend"),
+}
+
+
+class SampleDashboardRequest(BaseModel):
+    sample: Optional[str] = None
+
+
+@app.get("/api/samples")
+async def list_samples():
+    return {"samples": [{"key": k, "label": v[1]} for k, v in _SAMPLES.items()]}
+
+
+@app.post("/api/sample-dashboard")
+async def sample_dashboard(request: SampleDashboardRequest, http_request: Request):
+    """Build an instant dashboard from a bundled sample dataset — no upload, no
+    AI key, no cost."""
+    import shutil
+    from .dashboard import build_dashboard_spec
+
+    fname, label = _SAMPLES.get(request.sample or "sales", _SAMPLES["sales"])
+    src = os.path.join(os.path.dirname(__file__), "samples", fname)
+    if not os.path.exists(src):
+        raise HTTPException(status_code=404, detail="Sample dataset not found")
+
+    file_id = str(uuid.uuid4())
+    save_name = f"{file_id}_{fname}"
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    dst = os.path.join(UPLOADS_DIR, save_name)
+    shutil.copyfile(src, dst)
+
+    result = analyse_file(dst)
+    if result.get("error"):
+        raise HTTPException(status_code=422, detail=result["error"])
+    data_summary = result["data_summary"]
+    charts = [{"title": c["title"], "type": c["type"], "plotly_json": c["plotly_json"]} for c in result["charts"]]
+
+    cid = str(uuid.uuid4())
+    new_conv = {
+        "id": cid, "created_at": datetime.utcnow().isoformat(),
+        "title": f"{label} (sample)", "mode": "dashboard", "messages": [],
+        "file": {"id": file_id, "name": save_name, "path": dst,
+                 "rows": data_summary["row_count"], "columns": data_summary["column_count"]},
+        "pipeline": {"data_summary": data_summary, "charts": charts},
+        "dashboard": build_dashboard_spec(data_summary, charts, title=f"{label} (sample)",
+                                          df=result.get("dataframe"), template="overview"),
+        "status": "complete", "current_stage": "done", "is_sample": True,
+    }
+    _stamp_owner(new_conv, http_request)
+    storage.save_conversation(new_conv)
+    _track(http_request, "sample_dashboard", {"sample": request.sample or "sales"})
+    return {"conversation_id": cid}
 
 
 class CreateDashboardRequest(BaseModel):

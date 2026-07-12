@@ -4,7 +4,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install dev backend frontend build test test-backend test-frontend \
-        smoke smoke-split e2e e2e-install ui-audit clean
+        smoke smoke-split e2e e2e-install ui-audit gc backup clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -56,6 +56,12 @@ e2e-install: ## One-time: install the Playwright chromium browser
 
 ui-audit: ## Sweep every route × 390/768/1440 for overflow/tap-targets → UI_AUDIT.md (needs stack running)
 	cd frontend && node scripts/ui-audit.mjs
+
+gc: ## Sweep orphaned uploads/exports (never touches conversations). Cron this nightly.
+	uv run python -m backend.gc
+
+backup: ## Back up data/ (the whole database) to ./backups. Cron this nightly.
+	./scripts/backup.sh
 
 clean: ## Remove build artifacts and caches
 	rm -rf frontend/.next frontend/test-results frontend/playwright-report

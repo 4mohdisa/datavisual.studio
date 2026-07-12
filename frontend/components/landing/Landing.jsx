@@ -127,18 +127,19 @@ export default function Landing() {
             </p>
             <div className="flex flex-wrap items-center gap-3 mt-8">
               <Link
-                href="/studio"
+                href="/studio?try=sample"
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[var(--new-chat)] text-[var(--background)] text-sm font-medium hover:bg-[var(--new-chat-hover)] transition"
               >
-                <LayoutDashboard size={16} strokeWidth={1.5} /> Open the studio
+                <LayoutDashboard size={16} strokeWidth={1.5} /> Try it with sample data
               </Link>
-              <a
-                href="#how"
+              <Link
+                href="/studio"
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md border border-[var(--border-2)] text-sm text-[var(--text)] hover:bg-[var(--active)] transition"
               >
-                See how it works
-              </a>
+                Open the studio
+              </Link>
             </div>
+            <div className="text-[12px] text-[var(--faint)] mt-2.5">No sign-up friction, no AI key — sample dashboards are instant and free.</div>
             <div className="flex flex-wrap gap-x-6 gap-y-2 mt-8 text-[12px] text-[var(--faint)]">
               <span>Live data + web research</span><span>·</span>
               <span>What-changed on every update</span><span>·</span>

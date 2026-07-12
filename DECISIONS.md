@@ -80,3 +80,23 @@ Newest phase last.
 - The full LLM round-trip (spec → execute → phrase) **could not be verified live tonight** — the dev
   OpenRouter key's fast model was too slow (>90s) in this sandbox. The deterministic engine + router are
   tested; the LLM wiring is a copy of the already-working editor pattern. Confirm with a real run.
+
+## Phase 6 — launch hardening
+- **Zero-key onboarding** (highest leverage): 3 bundled sample datasets (`backend/samples/`) +
+  `POST /api/sample-dashboard` build a real dashboard with NO key, NO cost. "Try it with sample data" is
+  the primary hero CTA (`/studio?try=sample` auto-triggers) and a link in the Build card. Verified live.
+- **Rate limiting** (`backend/ratelimit.py`): in-memory token bucket, per-user AND per-IP, on
+  analyse/upload/upload-direct/connect/sample-dashboard/dashboard-chat. Default 20 burst + 20/min (env
+  `RATE_LIMIT_BURST` / `RATE_LIMIT_PER_MIN`). **In-process → single replica.** Disabled in tests
+  (`_rate_limiter.enabled=False` in conftest). Verified live (200×20 then 429).
+- **Disk GC** (`backend/gc.py`, `make gc`, `python -m backend.gc`): removes orphaned uploads older than N
+  days + old exports; **never touches conversations**. Nightly cron in the runbook.
+- **CSP** added to the existing headers (nosniff / referrer / frame / HSTS). Permissive where the app
+  needs it (Next inline scripts, Plotly eval, Clerk https), strict where free (object-src none, base-uri
+  self, frame-ancestors self). `/api/settings*` stays blocked at the proxy.
+
+### Assumptions to confirm with Isa (Phase 6)
+- CSP `script-src` allows `'unsafe-inline' 'unsafe-eval' https:` because Next inlines scripts and Plotly
+  evals — tighten to nonces post-launch once verified against the live Clerk domain. It does not weaken
+  the object-src/base-uri/frame-ancestors protections.
+- Rate-limit defaults (20/min) are a conservative floor — tune once you see real traffic.

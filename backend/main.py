@@ -865,7 +865,7 @@ class DashboardChatRequest(BaseModel):
 async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, http_request: Request):
     """Edit the EXISTING dashboard in place — never rebuilds it. Returns the
     assistant reply plus the updated spec."""
-    from .dashboard import apply_ops, build_dashboard_spec, run_editor_turn
+    from .dashboard import apply_ops, build_dashboard_spec, run_editor_turn, classify_intent, run_query_turn
 
     conv = _owned(conversation_id, http_request)
 
@@ -891,23 +891,39 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
         )
     dashboard = conv["dashboard"]
 
+    pin_op = None
     if request.ops:
         notes = await apply_ops(dashboard, request.ops, df, data_summary)
         reply = "Done." if not notes else "; ".join(notes)
     elif request.message and request.message.strip():
+        msg = request.message.strip()
         _track(http_request, "assistant_edit", {"conversation_id": conversation_id})
-        reply = await run_editor_turn(request.message.strip(), dashboard, data_summary, df)
+        # Route by intent: questions are answered from a deterministic data query,
+        # edits emit ops, 'both' does both. This is the fix for the "asked a
+        # question, got nothing" bug — the editor prompt only knew how to edit.
+        intent = await classify_intent(msg)
+        parts: list[str] = []
+        if intent in ("question", "both"):
+            q = await run_query_turn(msg, dashboard, data_summary, df)
+            if q.get("reply"):
+                parts.append(q["reply"])
+            pin_op = q.get("pin_op")
+        if intent in ("edit", "both"):
+            parts.append(await run_editor_turn(msg, dashboard, data_summary, df))
+        reply = "\n\n".join(p for p in parts if p) or (
+            "I couldn't find an answer or an edit to make — try naming a column, or ask me to add a chart."
+        )
     else:
         raise HTTPException(status_code=400, detail="Provide a message or ops")
 
     # Persist under the per-conversation lock, re-reading the freshest record so
-    # a concurrent write (e.g. a share mint) isn't clobbered. The async editor
-    # work above is finished, so the lock is held only for a fast sync save.
+    # a concurrent write (e.g. a share mint) isn't clobbered. The async work
+    # above is finished, so the lock is held only for a fast sync save.
     def _apply(fresh: dict) -> None:
         fresh["dashboard"] = dashboard
         fresh["title"] = dashboard.get("title", fresh.get("title"))
     storage.update_conversation(conversation_id, _apply)
-    return {"reply": reply, "dashboard": dashboard}
+    return {"reply": reply, "dashboard": dashboard, "pin_op": pin_op}
 
 
 class ConnectSourceRequest(BaseModel):

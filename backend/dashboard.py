@@ -748,6 +748,138 @@ async def run_editor_turn(
 
 
 # ---------------------------------------------------------------------------
+# Assistant intent router + deterministic question answering.
+#
+# The editor prompt only knows how to emit *ops*, so a plain question used to
+# fall through and return nothing. Now every message is classified; questions
+# are answered by executing a query spec against the data (backend/query.py) and
+# phrasing the result — never by the LLM guessing numbers.
+# ---------------------------------------------------------------------------
+
+_EDIT_NOUNS = ("chart", "metric", "pie", "bar", "graph", "widget", "table",
+               "comparison", "donut", "histogram", "scatter", "heatmap", "line")
+
+
+async def classify_intent(message: str) -> str:
+    """Return 'question' | 'edit' | 'both'. Keyword fast-path, LLM only when
+    the message is genuinely ambiguous."""
+    m = message.lower().strip()
+    starts_edit = bool(re.match(r"^(add|remove|delete|rename|move|pin|make|create|put|drop|insert|update|set|build|change)\b", m))
+    has_edit = starts_edit or any(n in m for n in _EDIT_NOUNS)
+    starts_q = bool(re.match(r"^(what|which|how|why|when|who|is|are|does|do|list|tell|show me|give me)\b", m))
+    has_q = "?" in m or starts_q or bool(re.search(r"\b(average|highest|lowest|top|total|compare|biggest|smallest|most|least|mean|median|sum)\b", m))
+    if has_edit and has_q:
+        return "both"
+    if has_edit:
+        return "edit"
+    if has_q:
+        return "question"
+    # Ambiguous → one small LLM call.
+    from .openrouter import query_model
+    resp = await query_model(get_fast_model(), [{"role": "user", "content": (
+        "Classify this dashboard-assistant message as exactly one word: question, edit, or both. "
+        "question = asks about the data; edit = changes the dashboard; both = does both.\n"
+        f"Message: {message!r}\nReply with only the word.")}], max_tokens=8)
+    w = ((resp or {}).get("content") or "").strip().lower()
+    return "both" if "both" in w else "edit" if "edit" in w else "question"
+
+
+def _schema_context(data_summary: Optional[dict], df: Optional[pd.DataFrame]) -> str:
+    """Compact schema the query-spec LLM can rely on: columns, types, a couple of
+    sample values, row count."""
+    lines = []
+    cols = (data_summary or {}).get("columns") or []
+    if cols:
+        for c in cols[:40]:
+            name = c.get("name")
+            samples = ""
+            if df is not None and name in df.columns:
+                vals = [str(v) for v in df[name].dropna().unique()[:3]]
+                samples = f" e.g. {', '.join(vals)}" if vals else ""
+            lines.append(f"- {name} ({c.get('type')}, nulls={c.get('null_count', 0)}){samples}")
+        rows = (data_summary or {}).get("row_count")
+    elif df is not None:
+        for name in list(df.columns)[:40]:
+            vals = [str(v) for v in df[name].dropna().unique()[:3]]
+            lines.append(f"- {name} ({df[name].dtype}) e.g. {', '.join(vals)}")
+        rows = len(df)
+    else:
+        return "No dataset is attached."
+    return f"Dataset: {rows} rows.\nColumns:\n" + "\n".join(lines)
+
+
+def _extract_json(raw: str) -> Optional[dict]:
+    m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+        return obj if isinstance(obj, dict) else None
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _fallback_answer(result: dict) -> str:
+    """A plain textual rendering of the computed result if the phrasing model is
+    unavailable — never leave a question unanswered."""
+    cols, rows = result.get("columns", []), result.get("rows", [])
+    if not rows:
+        return "No rows matched that query."
+    head = rows[:5]
+    lines = [", ".join(f"{k}: {v}" for k, v in r.items()) for r in head]
+    more = f" (+{len(rows) - 5} more)" if len(rows) > 5 else ""
+    return "Result:\n" + "\n".join(lines) + more
+
+
+async def run_query_turn(
+    message: str,
+    dashboard: dict,
+    data_summary: Optional[dict],
+    df: Optional[pd.DataFrame],
+) -> dict:
+    """Answer a data question: LLM → query spec → deterministic execution → LLM
+    phrases the answer FROM the result. Returns {reply, result?, pin_op?}."""
+    from .openrouter import query_model
+    from .query import run_query_spec, spec_to_widget_op
+
+    schema = _schema_context(data_summary, df)
+    spec_prompt = (
+        "Translate the question into a JSON query spec and output ONLY JSON:\n"
+        '{"filter":[{"column","op","value"}],"group_by":[..],'
+        '"agg":{"<col>":"sum|mean|min|max|count|median|nunique"},'
+        '"select":[..],"sort":{"column","dir":"asc|desc"},"limit":N}\n'
+        "op is one of == != > >= < <= in contains. Use EXACT column names. Omit keys you don't need. "
+        "For a grouped question use group_by + agg; the result columns are named <col>_<func>.\n\n"
+        f"{schema}\n\nQuestion: {message}\nJSON:"
+    )
+    resp = await query_model(get_fast_model(), [{"role": "user", "content": spec_prompt}], max_tokens=400)
+    if resp is None:
+        return {"reply": "The assistant model is unavailable — add your API key in the AI keys panel."}
+    spec = _extract_json(resp.get("content") or "")
+    if spec is None:
+        return {"reply": "I couldn't turn that into a data query. Try naming the column or metric you mean."}
+
+    result = run_query_spec(df, spec)
+    if "error" in result:
+        return {"reply": result["error"]}
+
+    ans_prompt = (
+        "Answer the question in 1-3 sentences using ONLY the computed result below. "
+        "Name the columns and values you used; never invent numbers.\n\n"
+        f"Question: {message}\nColumns: {result['columns']}\n"
+        f"Rows: {json.dumps(result['rows'][:20])}\nAnswer:"
+    )
+    ans = await query_model(get_fast_model(), [{"role": "user", "content": ans_prompt}], max_tokens=300)
+    reply = ((ans or {}).get("content") or "").strip() or _fallback_answer(result)
+
+    history = dashboard.setdefault("history", [])
+    history.append({"role": "user", "content": message})
+    history.append({"role": "assistant", "content": reply})
+    del history[:-30]
+    return {"reply": reply, "result": result, "pin_op": spec_to_widget_op(spec)}
+
+
+# ---------------------------------------------------------------------------
 # Sync engine — the "living monitor". Re-runs every refreshable widget against
 # fresh data AND fresh web research, then reports what actually changed. This is
 # what turns a dashboard from a one-time snapshot into something worth revisiting.

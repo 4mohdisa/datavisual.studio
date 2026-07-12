@@ -18,12 +18,13 @@ import { api } from '../lib/api';
 // ---------------------------------------------------------------------------
 
 const SUGGESTIONS = [
+  'Which region has the highest revenue?',
   'Add 3 more useful charts',
   'Add a total metric for the main value column',
   'Research this topic online and pin the findings',
 ];
 
-function AssistantPanel({ history, busy, onSend, onClose }) {
+function AssistantPanel({ history, busy, onSend, onClose, pinOp, onPin }) {
   const [input, setInput] = useState('');
   const scrollRef = useRef(null);
 
@@ -91,6 +92,16 @@ function AssistantPanel({ history, busy, onSend, onClose }) {
         </div>
       )}
 
+      {pinOp && (
+        <button
+          onClick={onPin}
+          disabled={busy}
+          className="mx-3 mb-2 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--accent)] text-[12.5px] text-[var(--accent)] hover:bg-[var(--active)] transition disabled:opacity-50"
+        >
+          <Plus size={13} strokeWidth={1.5} /> Pin this answer as a {pinOp.op === 'add_metric' ? 'metric' : 'chart'}
+        </button>
+      )}
+
       <form
         onSubmit={(e) => { e.preventDefault(); send(); }}
         className="flex items-center gap-2 p-3 border-t border-[var(--border)]"
@@ -98,7 +109,7 @@ function AssistantPanel({ history, busy, onSend, onClose }) {
         <Input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="e.g. add a pie of revenue by product"
+          placeholder="Ask about the data, or say what to add"
           disabled={busy}
         />
         <button
@@ -168,7 +179,10 @@ export default function Dashboard({ id }) {
       dashboard: { ...prev.dashboard, history: [...(prev.dashboard?.history || []), { role: 'user', content: message }] },
     } : prev);
     try {
-      applyResult(await api.dashboardChat(id, { message }));
+      const result = await api.dashboardChat(id, { message });
+      applyResult(result);
+      // An answered question can carry a spec to pin as a widget (the product moment).
+      setPinOp(result.pin_op || null);
     } catch (e) {
       setConv((prev) => prev ? {
         ...prev,
@@ -180,6 +194,17 @@ export default function Dashboard({ id }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  // A pinnable spec returned by the last answered question (null = nothing to pin).
+  const [pinOp, setPinOp] = useState(null);
+  const handlePin = async () => {
+    if (!pinOp) return;
+    const op = pinOp;
+    setPinOp(null);
+    try {
+      applyResult(await api.dashboardChat(id, { ops: [op] }));
+    } catch { setPinOp(op); /* restore so they can retry */ }
   };
 
   const [refreshing, setRefreshing] = useState(false);
@@ -527,6 +552,8 @@ export default function Dashboard({ id }) {
           busy={busy}
           onSend={handleSend}
           onClose={() => setPanelOpen(false)}
+          pinOp={pinOp}
+          onPin={handlePin}
         />
       )}
     </div>

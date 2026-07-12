@@ -62,3 +62,21 @@ Newest phase last.
   **first-boot runbook check** (DEPLOY_RUNBOOK.md §8).
 - The single-box `docker compose` path is the **tested fallback** and needs none of 2a/2b — it can
   launch on its own if anything about the split misbehaves.
+
+## Phase 3 — fix the assistant
+- **`backend/query.py`** is the real fix: the LLM emits a query spec, pandas executes it, the LLM
+  phrases the answer FROM the executed rows. Numbers are computed, never generated. Fully unit-tested
+  (group-by/agg/filter/select/sort/errors) independent of any LLM.
+- **Intent router** = keyword fast-path (deterministic, tested) + one small LLM call only when the
+  message is ambiguous. question → query turn; edit → ops; both → both.
+- **"Pin this answer as a widget"** reuses the same spec through the existing add_chart/add_metric op
+  (`spec_to_widget_op`) — a question becomes a dashboard widget in one click.
+- **Never fails silently:** query errors return a graceful clarification; no-answer-and-no-edit returns
+  a real message; no key returns an actionable "add your API key" line.
+- Minor: a 'both' message double-appends one history pair (query turn + editor turn each log). Cosmetic;
+  left as-is.
+
+### Assumptions to confirm with Isa (Phase 3)
+- The full LLM round-trip (spec → execute → phrase) **could not be verified live tonight** — the dev
+  OpenRouter key's fast model was too slow (>90s) in this sandbox. The deterministic engine + router are
+  tested; the LLM wiring is a copy of the already-working editor pattern. Confirm with a real run.

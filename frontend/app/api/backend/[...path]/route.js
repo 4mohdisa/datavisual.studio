@@ -18,6 +18,14 @@ async function handle(req, ctx) {
   const path = (parts || []).join('/');
   const search = new URL(req.url).search;
 
+  // Reject path traversal. Next decodes %2f inside catch-all segments into real
+  // slashes, so a request like `api/public/../../api/conversations` would keep
+  // its `api/public` prefix (skipping auth) yet fetch() would normalize it to a
+  // different, identity-scoped endpoint — an auth bypass. Refuse any `..` segment.
+  if (path.split('/').some((seg) => seg === '..' || seg === '.')) {
+    return Response.json({ detail: 'Bad request' }, { status: 400 });
+  }
+
   if (BLOCKED_PREFIXES.some((p) => path.startsWith(p))) {
     return Response.json({ detail: 'This endpoint is managed by the platform' }, { status: 403 });
   }
@@ -33,6 +41,9 @@ async function handle(req, ctx) {
   if (path.startsWith('api/admin')) {
     const adminPassword = req.headers.get('x-admin-password');
     if (adminPassword) headers.set('x-admin-password', adminPassword);
+  } else if (path.startsWith('api/public/')) {
+    // Public share view — the token in the URL is the capability; no session.
+    // Bounded to `api/public/` so a future `api/publicX` route can't inherit it.
   } else if (AUTH_ENABLED) {
     const { userId } = await auth();
     if (!userId) return Response.json({ detail: 'Sign in to continue' }, { status: 401 });

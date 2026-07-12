@@ -17,8 +17,13 @@ const authEnabled = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 // usable in development. The moment keys are configured, protection is on.
 export default authEnabled
   ? clerkMiddleware(async (auth, req) => {
-      // Admin API calls carry the password header; the backend checks it.
-      if (req.nextUrl.pathname.startsWith('/api/backend/api/admin')) return;
+      const p = req.nextUrl.pathname;
+      // Admin (password-gated on the backend) and public share views need no
+      // Clerk session — the backend checks the password / share token itself.
+      // Only exempt CLEAN paths: an encoded slash (%2f) or a `..` segment could
+      // otherwise smuggle the exemption onto an identity-scoped endpoint.
+      const exemptPrefix = p.startsWith('/api/backend/api/admin') || p.startsWith('/api/backend/api/public/');
+      if (exemptPrefix && !p.includes('%') && !p.includes('..')) return;
       if (isProtectedRoute(req)) await auth.protect();
     })
   : () => NextResponse.next();

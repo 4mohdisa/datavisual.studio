@@ -212,5 +212,13 @@ state = the `data/` directory; back that up and you have everything.
 
 ## Testing
 
-- `uv run python -c "import backend.main"` — import check.
-- `cd frontend && npm run build` — frontend check (Next build catches SSR breakage).
+Run from the project root via the **Makefile** (`make help`):
+- `make test-backend` — **pytest** (`backend/tests/`, hermetic temp data dir, no network):
+  trust boundaries (`is_valid_id`, share lifecycle), dashboard chart builder + every op,
+  templates, BYO-key resolution, data profiling, and FastAPI TestClient integration
+  (upload→dashboard→edit→share→public allowlist→revoke, ownership 404s, admin gate).
+- `make e2e` — **Playwright** (`frontend/e2e/`): landing/SEO + the deterministic
+  upload→dashboard→share→public journey. `make e2e-install` once (chromium). Reuses running servers.
+- `make smoke` — full-stack HTTP smoke (`scripts/smoke.mjs`) over a running stack.
+- `make test` = pytest + `next build`; `make build` = backend import + `next build`.
+- Quick manual checks: `uv run python -c "import backend.main"`, `cd frontend && npm run build`.

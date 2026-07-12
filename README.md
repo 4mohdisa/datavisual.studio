@@ -1,113 +1,101 @@
-# Datavisual.studio
+# datavisual.studio
 
-A multi-model AI research and prediction platform. Upload any dataset, ask any question, and receive a structured report where four leading AI models independently analyse your data alongside current internet research — then a chairman model synthesises a final answer.
+Living dashboards and AI-researched reports from your data. Turn any dataset into
+an editable dashboard, then let a council of AI models research your question on the
+live web — and tell you **what changed** since last time. Free: bring your own AI keys.
 
-Built by Mohammed Isa (mohdisa233@gmail.com)
+Built by [Mohammed Isa](https://github.com/4mohdisa) (mohdisa233@gmail.com)
 
 ## What it does
 
-- Upload CSV, Excel, or JSON datasets — or connect directly to a SQL database
-  (PostgreSQL, MySQL, SQLite) or a REST API, Power BI-style
-- Build a live web dashboard from any dataset in one click (no AI run):
-  metric cards, auto-generated interactive charts, entity comparison, sortable
-  data table, CSV/HTML export
-- Edit dashboards by chatting — "add a pie of revenue by product", "remove the
-  histogram", "research this topic and pin the findings". Changes apply to the
-  existing dashboard in place; research runs also feed their findings and
-  synthesis into the dashboard as insight cards
-- The platform profiles your data, auto-generates interactive charts, and searches the internet for current context
-- Four AI models (via OpenRouter) analyse everything independently and review each other's reasoning
-- A chairman model produces a synthesised final answer
-- Full report with comparison tables, source citations, and a live Activity Panel showing the pipeline in real time
-- Follow-up questions answered by the chairman using the full session context
+- **Instant dashboards** from CSV/Excel/JSON — or connect a SQL database
+  (PostgreSQL, MySQL, SQLite) or a JSON REST API, Power BI-style. Metrics,
+  9 chart types, entity comparison, a searchable/sortable data table, CSV export.
+- **Edit by chat or by hand** — "add a pie of revenue by product", "remove the
+  histogram". Edits apply to the same dashboard in place.
+- **The living monitor** — one **Update** re-pulls your data *and* re-runs the
+  research questions you pinned, then shows a plain-English feed of what moved.
+- **Deep research council** — several AI models answer independently, review each
+  other anonymously, and a chairman synthesises one cited report; the findings land
+  on a dashboard automatically.
+- **Share** any dashboard or report as a public, read-only link.
+- **Export** to structured PDF or self-contained HTML.
+- **Prediction engine** (ELO / Poisson / XGBoost) activates automatically when the
+  data looks like ratings.
 
-## Setup
+## Monorepo layout
 
-### Requirements
-- Python 3.10+
-- Node.js 18+
-- uv (Python package manager)
-- An OpenRouter API key at openrouter.ai
-
-### Installation
-
-Backend:
-```bash
-uv sync
+```
+backend/    FastAPI engine (Python, uv) — owns ALL data on local disk. Port 8001.
+frontend/   Next.js 16 app + thin auth proxy. Port 3000.
+scripts/    smoke.mjs (full-stack HTTP smoke test)
+data/        runtime state (gitignored): conversations, uploads, users, exports…
+Makefile     one-command tasks (make help)
 ```
 
-You don't need a `.env` file — add your OpenRouter API key from the app's
-Settings dialog (it opens automatically on first launch). A `.env` with
-`OPENROUTER_API_KEY` still works as a fallback if you prefer.
+There is **no external database** — back up `data/` and you have everything.
 
-Frontend:
+## Quick start
+
 ```bash
-cd frontend
-npm install
+make install     # backend (uv) + frontend (npm) deps
+make dev         # runs backend :8001 and frontend :3000 together (Ctrl-C stops both)
+```
+Open http://localhost:3000. With no Clerk keys the app runs in **open dev mode**
+(no sign-in). Prefer two terminals? `make backend` and `make frontend`.
+
+Individual pieces:
+```bash
+uv run python -m backend.main      # backend only (from the project root)
+cd frontend && npm run dev         # frontend only
 ```
 
-### Running
+## Testing
 
-Terminal 1 — backend:
 ```bash
-uv run python -m backend.main
+make test            # backend pytest (hermetic) + frontend production build
+make test-backend    # 70+ unit + integration tests (trust boundaries, dashboard
+                     #   engine, ops protocol, share allowlist, ownership, admin gate)
+make e2e-install     # one-time: install the Playwright chromium browser
+make e2e             # browser e2e (landing, SEO, upload→dashboard→share journey)
+make smoke           # full-stack HTTP smoke over a running stack (make dev first)
 ```
 
-Terminal 2 — frontend:
-```bash
-cd frontend
-npm run dev
-```
+## AI keys (bring your own)
 
-Open http://localhost:3000
+The app is free — each signed-in user brings their own **OpenRouter** (required) and
+optional **Gemini** keys, saved from the sidebar **"AI keys"** panel. Keys are stored
+privately with your account and only ever sent to the AI providers. In open dev mode
+(no Clerk), a global `OPENROUTER_API_KEY` in the backend `.env` is used as a fallback.
 
-## PDF export
+## Deployment
 
-PDF export requires WeasyPrint system libraries.
-- macOS:  `brew install pango cairo`
-- Linux:  `apt-get install libpango-1.0-0 libcairo2`
-
-Without these, export falls back to HTML automatically.
+See [DEPLOYMENT.md](DEPLOYMENT.md) — Docker Compose or split backend/frontend hosting.
+Required prod env: `PROXY_SHARED_SECRET` (both sides), Clerk keys (frontend),
+`ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, and `NEXT_PUBLIC_SITE_URL` (SEO/canonical).
+PDF export + charts need Chromium/Chrome on the backend host (the Docker image
+installs it). See also [CLAUDE.md](CLAUDE.md) for technical notes and
+[PROJECT_AUDIT.md](PROJECT_AUDIT.md) for a full architecture + feature map.
 
 ## Tech stack
 
-- **Backend:** FastAPI, Python 3.10+, pandas, Plotly, WeasyPrint, OpenRouter API
-- **Frontend:** Next.js 16 (App Router), React 19, Tailwind CSS, custom UI components, react-plotly.js
+- **Backend:** FastAPI, pandas, Plotly, kaleido, WeasyPrint, scipy/scikit-learn/xgboost,
+  SQLAlchemy, OpenRouter + Google Gemini.
+- **Frontend:** Next.js 16 (App Router), React 19, Tailwind CSS, a custom UI kit,
+  react-plotly.js, Clerk (identity only).
 
 ---
 
-## 🔬 How Predictions Work — Example
+## 🔬 How predictions work — example
 
-**Upload:** `elo_ratings_wc2026.csv` (4,683 rows, 23 columns)
-**Question:** *"Which team has the highest probability of winning the 2026 FIFA World Cup?"*
+**Upload:** `elo_ratings_wc2026.csv` · **Ask:** *"Which team is most likely to win the 2026 World Cup?"*
 
-**Pipeline:**
-1. pandas detects ELO rating column + country entity column + snapshot_date time column
-2. Form index computed from wins/losses/draws weighted toward recent periods
-3. Model A runs 10,000 bracket simulations → Spain 27.4%
-4. Model B runs 10,000 Poisson simulations with Dixon-Coles → Spain 31.7%
-5. Ensemble average → Spain 29.6%
-6. Perplexity searches live results, odds, expert forecasts → extracts percentage values
-7. All four council models receive dataset + predictions + research
-8. Peer review weights model responses by ranking
-9. Final: `(29.6% × 0.40) + (internet% × 0.35) + (council% × 0.25)` = final range
-10. Chairman explains the numbers, cannot change them
-
----
-
-## ⚙️ Configuration
-
-Open **Settings** (gear icon at the bottom of the sidebar) to set your own
-OpenRouter API key and pick the council, chairman, and research models.
-Settings are stored locally in `data/settings.json`, and the key is only ever
-sent to OpenRouter.
-
-Environment variables (optional fallback):
-
-```env
-OPENROUTER_API_KEY=sk-or-v1-...     # Fallback if not set in Settings
-DATAVISUAL_DEBUG=false              # Optional: enable debug logging
-```
+1. pandas detects the ELO rating + country + snapshot-date columns
+2. Model A runs 10,000 bracket simulations; Model B runs 10,000 Poisson (Dixon-Coles) sims
+3. Ensemble average of the dataset models
+4. Perplexity gathers live results, odds and expert forecasts
+5. The council receives dataset + predictions + research, then peer-reviews
+6. Final = `dataset 40% + internet 35% + council 25%`; the chairman explains but can't change the numbers
 
 ---
 

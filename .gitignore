@@ -22,3 +22,5 @@ frontend/.vite/
 frontend/.next/
 frontend/.env.local
 !frontend/.env.local.example
+# UI audit screenshots
+artifacts/

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
+import { Menu } from 'lucide-react';
 import Sidebar from './Sidebar';
 import ChatInterface from './ChatInterface';
 import Home from './Home';
@@ -104,6 +105,7 @@ function AppShell() {
   // Activity Panel: accumulating log of granular SSE "activity" events.
   const [activityLog, setActivityLog] = useState([]);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // mobile slide-over
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Global keyboard shortcuts (6.4): Cmd/Ctrl K (palette), N (new), Slash (panel), Escape (close).
   useEffect(() => {
@@ -559,16 +561,30 @@ function AppShell() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--background)] text-[var(--text)]">
-      <Sidebar
-        conversations={sidebarConversations}
-        currentConversationId={currentConversationId}
-        onSelectConversation={handleSelectConversation}
-        onNewConversation={handleNewConversation}
-        onDeleteConversation={handleDeleteConversation}
-        onRenameConversation={handleRenameConversation}
-        newChatDisabled={newChatDisabled}
-        loading={loadingConvos}
-      />
+      {/* Mobile: reveal the sidebar as a slide-over. On md+ it's a normal column. */}
+      <button
+        type="button"
+        onClick={() => setSidebarOpen(true)}
+        aria-label="Open menu"
+        className="md:hidden fixed top-3 left-3 z-30 w-9 h-9 flex items-center justify-center rounded-md bg-[var(--surface-input)] border border-[var(--border-2)] text-[var(--muted)] shadow-[0_2px_10px_rgba(0,0,0,0.4)]"
+      >
+        <Menu size={18} strokeWidth={1.5} />
+      </button>
+      {sidebarOpen && (
+        <div className="md:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
+      )}
+      <div className={`fixed md:static inset-y-0 left-0 z-50 transition-transform duration-200 md:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <Sidebar
+          conversations={sidebarConversations}
+          currentConversationId={currentConversationId}
+          onSelectConversation={(id) => { setSidebarOpen(false); handleSelectConversation(id); }}
+          onNewConversation={() => { setSidebarOpen(false); handleNewConversation(); }}
+          onDeleteConversation={handleDeleteConversation}
+          onRenameConversation={handleRenameConversation}
+          newChatDisabled={newChatDisabled}
+          loading={loadingConvos}
+        />
+      </div>
       {currentConversationId ? (
         <ChatInterface
           conversation={currentConversation}

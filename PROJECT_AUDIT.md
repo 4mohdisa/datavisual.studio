@@ -270,12 +270,10 @@ Open dev mode needs no keys. To exercise BYO keys / auth, set Clerk keys in
 
 ## 11. Known issues / tech debt (for the next agent)
 
-- **JSON store is racy (low sev, pre-existing).** `storage.save_conversation` is a blind
-  whole-file overwrite (no tmp-file + `os.replace`), and there is no per-conversation write
-  lock — only `_shares_lock` around the two share functions. Concurrent writers on the same
-  record (e.g. Update + Share within the same second) can clobber each other; worst case a
-  freshly minted share link 404s. **Durable fix**: per-conversation write lock or atomic
-  read-modify-write in `save_conversation` used by ALL callers.
+- ~~JSON store is racy~~ **FIXED (v1.0.0-launch, Phase 1).** All state writes go through
+  `backend/atomic.py` (tmp-file + fsync + `os.replace`), and conversation read-modify-write goes
+  through `storage.conversation_lock` / `update_conversation` (re-read under lock). The lock is
+  in-process → **single backend replica assumed** (see `DECISIONS.md`).
 - **`_dataset_payload` re-reads the file from disk on every public view** — fine at current
   scale; cache if share traffic grows.
 - **`prediction_engine.py` is large (1545 lines) and mostly dormant** — only activates on

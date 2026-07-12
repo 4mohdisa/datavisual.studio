@@ -66,6 +66,11 @@ async function main() {
   await check('GET /studio 200 (open mode)', async () => {
     assert((await get('/studio')).status === 200, 'not 200');
   });
+  await check('Backend /health reachable through proxy', async () => {
+    const r = await get('/api/backend/health');
+    assert(r.status === 200, `status ${r.status}`);
+    assert((await r.json()).status === 'ok', 'not ok');
+  });
 
   // --- Security: path-traversal guards must NOT leak -------------------------
   await check('Proxy rejects %2f traversal (api/public/..) → 400, no leak', async () => {
@@ -93,6 +98,22 @@ async function main() {
     assert(j.file_id, 'no file_id');
     globalThis.__fid = j.file_id;
   });
+
+  // The launch blocker was a >4.5 MB file dying on a serverless proxy. Prove a
+  // large upload survives the current transport (SPLIT=1 to gate it in CI).
+  if (process.env.SPLIT === '1' || process.env.LARGE_UPLOAD === '1') {
+    await check('Upload >5 MB CSV survives the transport', async () => {
+      const header = 'id,value\n';
+      const row = '1,1234567\n';
+      const body = header + row.repeat(Math.ceil((5.5 * 1024 * 1024) / row.length));
+      assert(body.length > 5 * 1024 * 1024, 'test body not >5MB');
+      const form = new FormData();
+      form.append('file', new Blob([body], { type: 'text/csv' }), 'big.csv');
+      const r = await get('/api/backend/api/upload', { method: 'POST', body: form });
+      assert(r.status === 200, `status ${r.status} (a >5MB upload was rejected)`);
+      assert((await r.json()).file_id, 'no file_id for large upload');
+    });
+  }
 
   await check('Create dashboard from upload → widgets', async () => {
     const r = await get('/api/backend/api/dashboard', {

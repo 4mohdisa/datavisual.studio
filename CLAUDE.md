@@ -209,6 +209,24 @@ state = the `data/` directory; back that up and you have everything.
 4. Charts carry a non-serialisable `dataframe` key in memory — strip before persisting.
 5. Metadata (label_to_model, aggregate_rankings) persists inside the report/pipeline,
    not as top-level conversation fields.
+6. **Pipeline transport = polling by DEFAULT.** `POST /api/analyse` returns a job kickoff
+   immediately and runs the pipeline as a background `asyncio` task that persists
+   `status`/`current_stage` (polled via `/api/conversations/{id}/status`). SSE is opt-in via
+   `?stream=1` + `NEXT_PUBLIC_STREAMING=1` — it times out on serverless. The background task
+   captures the request context so the user's BYO key still resolves.
+7. **`/api/upload-direct` is a deliberate carve-out** from "the browser never calls FastAPI
+   directly": for the Vercel split, the browser POSTs a large file straight to the backend
+   with a short-lived **HMAC upload ticket** (minted by the authed Next `/api/upload-ticket`
+   route, signed with `PROXY_SHARED_SECRET`). It's exempt from the proxy-secret guard and gated
+   by the ticket (constant-time compare, expiring, single-use, traversal-rejecting). Gated on
+   `NEXT_PUBLIC_BACKEND_ORIGIN`; unset → the proxied `/api/upload` is used (single-box/dev).
+8. **`SECRET_KEY` is REQUIRED in prod** — it encrypts BYO API keys at rest (Fernet). Missing +
+   `PROXY_SHARED_SECRET` set → the backend refuses to start. Losing it → users re-enter keys.
+9. **All JSON state writes are atomic** (`backend/atomic.py`); conversation read-modify-write
+   goes through `storage.conversation_lock` / `update_conversation`. The lock is in-process →
+   **single backend replica assumed**. Never hold it across an `await`.
+10. `output: 'standalone'` in `next.config.mjs` is gated on `DOCKER_BUILD=1` — Vercel must NOT
+    use standalone. The Dockerfile sets it.
 
 ## Testing
 

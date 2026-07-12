@@ -117,3 +117,31 @@ def test_settings_endpoint_shape(client):
     r = client.get("/api/settings")
     assert r.status_code == 200
     assert "api_key" not in r.json() or "api_key_masked" in r.json()
+
+
+# --- Phase 2a: pipeline transport (polling default, SSE opt-in) ---------------
+
+def test_analyse_kickoff_is_polling_by_default(client):
+    """Default /api/analyse returns a JSON job kickoff immediately (not a
+    long-lived SSE stream), so it survives a serverless function timeout."""
+    cid = "kickoff-default"
+    assert client.post("/api/conversations/create",
+                       json={"conversation_id": cid, "title": "q"}).status_code == 200
+    r = client.post("/api/analyse", json={"conversation_id": cid, "question": "trends?"})
+    assert r.status_code == 200, r.text
+    assert "application/json" in r.headers.get("content-type", "")
+    body = r.json()
+    assert body["conversation_id"] == cid and body["status"] == "running"
+    # The polling endpoint reflects a job state, never a stream.
+    s = client.get(f"/api/conversations/{cid}/status").json()
+    assert s["status"] in ("running", "complete", "error")
+
+
+def test_analyse_stream_flag_returns_sse(client):
+    """?stream=1 opts back into the live SSE transport."""
+    cid = "kickoff-stream"
+    client.post("/api/conversations/create", json={"conversation_id": cid, "title": "q"})
+    with client.stream("POST", "/api/analyse?stream=1",
+                       json={"conversation_id": cid, "question": "hi"}) as r:
+        assert r.status_code == 200
+        assert "text/event-stream" in r.headers.get("content-type", "")

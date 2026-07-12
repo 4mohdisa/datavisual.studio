@@ -249,11 +249,38 @@ export const api = {
   },
 
   /**
-   * Upload a data file (CSV/Excel/JSON).
+   * Upload a data file (CSV/Excel/JSON). When a direct-backend origin is
+   * configured (the Vercel split), the file goes STRAIGHT to the backend with a
+   * short-lived HMAC ticket so it bypasses the serverless body-size limit.
+   * Otherwise it goes through the proxy (single-box deploys, local dev).
    */
   async uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
+
+    if (process.env.NEXT_PUBLIC_BACKEND_ORIGIN) {
+      try {
+        const t = await fetch('/api/upload-ticket', { method: 'POST' });
+        if (t.ok) {
+          const { ticket, backend_origin } = await t.json();
+          const direct = await fetch(`${backend_origin}/api/upload-direct`, {
+            method: 'POST',
+            headers: { 'X-Upload-Ticket': ticket },
+            body: formData,
+          });
+          if (!direct.ok) {
+            const err = await direct.json().catch(() => ({}));
+            throw new Error(err.detail || 'Upload failed');
+          }
+          return direct.json();
+        }
+        // 501 (not configured) or other → fall through to the proxied path.
+      } catch (e) {
+        if (e instanceof Error && e.message !== 'Upload failed') { /* network → fall back */ }
+        else throw e;
+      }
+    }
+
     const response = await fetch(`${API_BASE}/api/upload`, {
       method: 'POST',
       body: formData,
@@ -266,10 +293,30 @@ export const api = {
   },
 
   /**
-   * Run the analyse pipeline (replaces sendMessage for the new UI).
+   * Kick off the analyse pipeline as a background job (the DEFAULT, Vercel-safe
+   * transport). Returns immediately; the caller polls getStatus() for progress.
+   */
+  async analyseStart(conversationId, question, fileId, matchHistoryFileId) {
+    const response = await fetch(`${API_BASE}/api/analyse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        question,
+        file_id: fileId || null,
+        match_history_file_id: matchHistoryFileId || null,
+      }),
+    });
+    if (!response.ok) throw new Error('Analyse request failed');
+    return response.json();
+  },
+
+  /**
+   * Run the analyse pipeline as a live SSE stream (opt-in, NEXT_PUBLIC_STREAMING=1).
+   * The ?stream=1 flag tells the backend to stream rather than kick off a job.
    */
   async analyseStream(conversationId, question, fileId, matchHistoryFileId, onEvent) {
-    const response = await fetch(`${API_BASE}/api/analyse`, {
+    const response = await fetch(`${API_BASE}/api/analyse?stream=1`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -4,7 +4,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install dev backend frontend build test test-backend test-frontend \
-        smoke e2e e2e-install clean
+        smoke smoke-split e2e e2e-install clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -41,6 +41,12 @@ test-frontend: ## Frontend production build (catches SSR/type breakage)
 
 smoke: ## Full-stack HTTP smoke test (needs the stack running: make dev)
 	node scripts/smoke.mjs
+
+smoke-split: ## Smoke the split host config (polling default + >5MB upload). Needs the stack running.
+	@echo "Proving the Vercel-split config: polling pipeline transport + large upload."
+	@echo "For a TRUE two-origin test, run the frontend with BACKEND_URL/NEXT_PUBLIC_BACKEND_ORIGIN"
+	@echo "pointed at a separate backend host, then: SPLIT=1 make smoke-split"
+	SPLIT=1 node scripts/smoke.mjs
 
 e2e: ## Browser e2e (Playwright; auto-starts servers, reuses if running)
 	cd frontend && npm run test:e2e

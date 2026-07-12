@@ -133,7 +133,10 @@ async def _proxy_secret_guard(request: Request, call_next):
     the matching X-Proxy-Secret header) may reach the API — so a publicly
     hosted backend isn't an open endpoint. Unset = open local dev."""
     secret = os.getenv("PROXY_SHARED_SECRET")
-    if secret and request.url.path.startswith("/api"):
+    # /api/upload-direct is the deliberate browser→backend carve-out: it carries
+    # no proxy secret (it never goes through the proxy) and is gated by its own
+    # HMAC upload ticket instead.
+    if secret and request.url.path.startswith("/api") and request.url.path != "/api/upload-direct":
         if request.headers.get("x-proxy-secret") != secret:
             return JSONResponse({"detail": "Forbidden"}, status_code=403)
     # Bind the request identity for the whole call tree (incl. SSE generators),
@@ -674,9 +677,9 @@ class ReanalyseRequest(BaseModel):
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
-@app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Accept a CSV/Excel/JSON file upload and return metadata."""
+async def _process_upload(file: UploadFile) -> dict:
+    """Sanitise, size-cap, persist and profile an uploaded file. Shared by the
+    proxied /api/upload and the direct /api/upload-direct paths."""
     # Path(...).name strips any client-supplied directory components so the
     # filename can't traverse out of UPLOADS_DIR.
     filename = Path(file.filename or "upload").name
@@ -718,6 +721,61 @@ async def upload_file(file: UploadFile = File(...)):
         "columns": summary["column_count"],
         "column_names": [c["name"] for c in summary["columns"] if c["type"] == "numeric"],
     }
+
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """Accept a CSV/Excel/JSON file upload (via the Next proxy) and return metadata."""
+    return await _process_upload(file)
+
+
+# --- Direct browser→backend upload (Vercel path) -----------------------------
+# A 50 MB file cannot cross a serverless proxy function, so on the split host the
+# browser POSTs directly to the backend origin, authorized by a short-lived HMAC
+# ticket minted by the AUTHENTICATED Next proxy. Deliberate carve-out from "the
+# browser never calls FastAPI directly" — treated with share-token paranoia.
+_used_upload_nonces: set = set()
+
+
+def _verify_upload_ticket(ticket: str) -> Optional[str]:
+    """Return the ticket's user_id if it is valid, unexpired, and unused; else
+    None. Ticket = ``user_id.exp.nonce.hmac`` signed with PROXY_SHARED_SECRET."""
+    import hashlib
+    import hmac as _hmac
+    import time as _time
+
+    secret = os.getenv("PROXY_SHARED_SECRET")
+    if not secret or not ticket:
+        return None
+    parts = ticket.split(".")
+    if len(parts) != 4:
+        return None
+    user_id, exp_s, nonce, mac = parts
+    # Paranoia: no traversal characters anywhere in the identity/nonce.
+    if any(("/" in p or ".." in p or not p) for p in (user_id, nonce)):
+        return None
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return None
+    if exp < int(_time.time()):
+        return None
+    expected = _hmac.new(secret.encode(), f"{user_id}.{exp_s}.{nonce}".encode(), hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected, mac):
+        return None
+    if nonce in _used_upload_nonces:  # single use
+        return None
+    _used_upload_nonces.add(nonce)
+    return user_id
+
+
+@app.post("/api/upload-direct")
+async def upload_file_direct(http_request: Request, file: UploadFile = File(...)):
+    """Direct upload authorized by an HMAC ticket (exempt from the proxy-secret
+    guard; the ticket is the capability). Same cap/sanitisation as /api/upload."""
+    if _verify_upload_ticket(http_request.headers.get("x-upload-ticket", "")) is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired upload ticket")
+    return await _process_upload(file)
 
 
 class CreateDashboardRequest(BaseModel):
@@ -1052,10 +1110,15 @@ async def sync_dashboard_endpoint(conversation_id: str, http_request: Request):
     return {"dashboard": dashboard, "changes": changes, "synced_at": dashboard.get("last_synced")}
 
 
+# Strong refs to in-flight background pipeline tasks (default polling mode) so
+# the event loop doesn't garbage-collect them mid-run.
+_pipeline_tasks: set = set()
+
+
 @app.post("/api/analyse")
 async def analyse(request: AnalyseRequest, http_request: Request):
     """
-    Main pipeline endpoint. Streams SSE events following the existing pattern.
+    Main pipeline endpoint. Default = job kickoff + polling; ?stream=1 = SSE.
 
     First message: full pipeline (data analysis → internet research → council → report)
     Follow-up: chairman only (or full re-run if message starts with !council)
@@ -1078,7 +1141,15 @@ async def analyse(request: AnalyseRequest, http_request: Request):
             activity_events.append(payload)
             return f"data: {json.dumps(payload)}\n\n"
 
+        def _advance(name: str) -> None:
+            # Persist the stage so a POLLING client (the default, Vercel-safe
+            # transport) sees the same progress a streaming client sees live.
+            nonlocal current_stage
+            current_stage = name
+            update_conversation_status(request.conversation_id, "running", name)
+
         try:
+            _advance("initialising")
             storage.add_user_message(request.conversation_id, request.question)
 
             # ----------------------------------------------------------------
@@ -1101,7 +1172,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                 data_excerpt = None
                 data_df = None  # in-memory dataframe — fuels the prediction engine
                 if mode == "data":
-                    current_stage = "data analysis"
+                    _advance("data analysis")
                     yield f"data: {json.dumps({'type': 'analysis_start'})}\n\n"
                     file_record = _find_upload(request.file_id)
                     if file_record is None:
@@ -1265,7 +1336,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                     )
 
                 # Internet research — three targeted searches in sequence.
-                current_stage = "internet research"
+                _advance("internet research")
                 update_conversation_status(request.conversation_id, "running", "research")
                 yield f"data: {json.dumps({'type': 'research_start'})}\n\n"
                 searches = []
@@ -1329,7 +1400,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                     print(f"[DEBUG] Prompt first 800 chars: {enriched_prompt[:800]}", flush=True)
 
                 # Stage 1
-                current_stage = "stage 1"
+                _advance("stage 1")
                 yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
                 # Activity: one querying event per council model. (Council querying is
                 # parallel inside council.py, so these are emitted up front rather than
@@ -1366,7 +1437,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                     )
 
                 # Stage 2
-                current_stage = "stage 2"
+                _advance("stage 2")
                 update_conversation_status(request.conversation_id, "running", "council_stage2")
                 yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
                 yield act(
@@ -1386,7 +1457,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                 # baseline so a prediction is ALWAYS produced when numeric data
                 # exists. Computed BEFORE the chairman runs and fed into its prompt.
                 # ----------------------------------------------------------------
-                current_stage = "prediction engine"
+                _advance("prediction engine")
                 internet_probs = extract_internet_probs(internet_findings, entity_names)
                 council_probs = extract_council_probs(stage1_results, entity_names, aggregate_rankings)
 
@@ -1490,7 +1561,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                 prediction_context = format_chairman_prediction_block(prediction_table, suite=prediction_suite)
 
                 # Stage 3
-                current_stage = "stage 3"
+                _advance("stage 3")
                 update_conversation_status(request.conversation_id, "running", "council_stage3")
                 yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
                 yield act(
@@ -1511,7 +1582,7 @@ async def analyse(request: AnalyseRequest, http_request: Request):
                     )
 
                 # Build structured report
-                current_stage = "report"
+                _advance("report")
                 update_conversation_status(request.conversation_id, "running", "synthesis")
                 report = build_report(
                     question=actual_question,
@@ -1603,11 +1674,33 @@ async def analyse(request: AnalyseRequest, http_request: Request):
             yield act("stage_error", f"{current_stage}: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
+    # Streaming (SSE) is opt-in behind ?stream=1 — a long-lived stream times out
+    # on serverless functions. The DEFAULT is job kickoff + polling: return
+    # immediately and run the pipeline as a background task that persists status
+    # (which GET /api/conversations/{id}/status reports). asyncio.create_task
+    # captures the current context, so the user's BYO key still resolves inside
+    # the task even after the request's identity is unbound.
+    if http_request.query_params.get("stream") == "1":
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    async def _drain():
+        gen = event_generator()
+        try:
+            async for _ in gen:  # drive the pipeline to completion (events discarded)
+                pass
+        except Exception as e:  # pragma: no cover — generator handles its own errors
+            update_conversation_status(request.conversation_id, "error", error_message=str(e))
+        finally:
+            _pipeline_tasks.discard(task)
+
+    task = asyncio.create_task(_drain())
+    _pipeline_tasks.add(task)  # keep a strong ref so the task isn't GC'd mid-run
+    update_conversation_status(request.conversation_id, "running", "initialising")
+    return JSONResponse({"conversation_id": request.conversation_id, "status": "running"})
 
 
 @app.post("/api/reanalyse")

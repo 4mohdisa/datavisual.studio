@@ -37,3 +37,28 @@ Newest phase last.
   scheduler jobs). Single replica is assumed throughout.
 - Dashboard-chat now persists via re-read-and-merge of only `dashboard` + `title`. If a future
   field must survive a concurrent edit the same way, add it to that merge.
+
+## Phase 2 — host split
+- **Pipeline transport is polling by DEFAULT**; SSE is opt-in (`?stream=1` + `NEXT_PUBLIC_STREAMING=1`).
+  The kickoff task uses `asyncio.create_task`, which snapshots the request's contextvars, so the
+  user's BYO key resolves inside the background job even after the request unbinds identity.
+  Frontend reuses AppShell's existing `startPolling`; fixed `STAGE_ORDER`/`progressFromStage` to
+  match the backend's actual stage strings (they were stale and never matched → progress never advanced).
+- **Direct upload** (`/api/upload-direct`) is a deliberate, narrow carve-out. Ticket = signed by
+  `PROXY_SHARED_SECRET`, 5-min TTL, single-use nonce (in-memory → single replica), traversal-rejecting,
+  constant-time compared. Exempt from the proxy-secret guard; gated on `NEXT_PUBLIC_BACKEND_ORIGIN`
+  (unset → proxied upload, unchanged). Single-use nonce set is in-memory (lost on restart — a restart
+  just invalidates outstanding tickets, which expire in 5 min anyway).
+- `next.config` standalone gated on `DOCKER_BUILD=1`. `data/` kept as a **host bind mount** (not a
+  named volume) — it survives `docker compose down -v`, which is what the plan actually wants.
+- **2c committed separately** from 2a/2b (three commits in this phase) so the safe deploy config was
+  banked before the riskier pipeline refactor — honouring "main deployable at every commit" over
+  "one commit per phase" where they conflicted.
+
+### Assumptions to confirm with Isa (Phase 2)
+- **Full two-origin split verification** (real Vercel frontend + separate AWS backend, plus a full
+  pipeline run with a real key) can't run in this sandbox. `make smoke-split` proves the runnable
+  parts (polling transport, /health, >5MB upload through the local transport). The true split is a
+  **first-boot runbook check** (DEPLOY_RUNBOOK.md §8).
+- The single-box `docker compose` path is the **tested fallback** and needs none of 2a/2b — it can
+  launch on its own if anything about the split misbehaves.

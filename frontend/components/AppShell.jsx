@@ -26,32 +26,37 @@ function deriveTitle(messages) {
 }
 
 // Ordered pipeline stages (must match backend _PROGRESS_PCT keys).
-const STAGE_ORDER = ['data_analysis', 'research', 'council_stage1', 'council_stage2', 'council_stage3', 'synthesis', 'done'];
+// The exact stage strings the backend persists via update_conversation_status
+// (see backend/main.py _advance). Polling reads these to advance the progress UI.
+const STAGE_ORDER = ['initialising', 'data analysis', 'internet research',
+  'stage 1', 'stage 2', 'prediction engine', 'stage 3', 'report', 'done'];
 
 // Build an AnalysisProgress `progress` object from a backend current_stage, so a
-// reloaded "running" conversation shows the right step highlighted.
+// polling (or reloaded) "running" conversation shows the right step highlighted.
 function progressFromStage(stage) {
   const idx = STAGE_ORDER.indexOf(stage);
+  const at = (name) => STAGE_ORDER.indexOf(name);
   const stepStatus = (name) => {
-    const i = STAGE_ORDER.indexOf(name);
     if (idx < 0) return 'pending';
+    const i = at(name);
     if (i < idx) return 'done';
     if (i === idx) return 'active';
     return 'pending';
   };
-  const synthIdx = STAGE_ORDER.indexOf('synthesis');
   let report = 'pending';
-  if (idx > synthIdx) report = 'done';
-  else if (idx === synthIdx) report = 'active';
+  if (idx >= at('report')) report = idx >= at('done') ? 'done' : 'active';
   return {
-    analysis: stepStatus('data_analysis'),
-    research: stepStatus('research'),
-    stage1: stepStatus('council_stage1'),
-    stage2: stepStatus('council_stage2'),
-    stage3: stepStatus('council_stage3'),
+    analysis: stepStatus('data analysis'),
+    research: stepStatus('internet research'),
+    stage1: stepStatus('stage 1'),
+    stage2: stepStatus('stage 2'),
+    stage3: stepStatus('stage 3'),
     report,
   };
 }
+
+// SSE streaming is opt-in; polling (background job) is the default transport.
+const STREAMING = process.env.NEXT_PUBLIC_STREAMING === '1';
 
 const newProgressMessage = (mode) => ({
   role: 'assistant',
@@ -297,13 +302,15 @@ function AppShell() {
           setActivityLog(full.pipeline?.activity || []);
         } catch { /* ignore */ }
         loadConversations();
+        setIsLoading(false);
       } else if (s.status === 'error') {
         stopPolling();
         setCurrentConversation((prev) =>
           prev && prev.id === id ? { ...prev, messages: ensureErrorMessage([...prev.messages], s.error_message) } : prev
         );
+        setIsLoading(false);
       }
-    }, 2000);
+    }, 1500);
   };
 
   // ---- conversation lifecycle ----
@@ -441,6 +448,15 @@ function AppShell() {
         setCurrentConversation((prev) => _updateLastMsg(prev, (m) => {
           m.progress = { ...m.progress, [key]: value };
         }));
+
+      // DEFAULT transport: kick off a background job, then poll for progress.
+      // This is the only path that survives a serverless function timeout, so it
+      // must work on its own. SSE streaming is opt-in via NEXT_PUBLIC_STREAMING=1.
+      if (!STREAMING) {
+        await api.analyseStart(convId, content, fileId, matchHistoryFileId);
+        startPolling(convId);
+        return; // startPolling drives progress, completion, and clears isLoading
+      }
 
       await api.analyseStream(convId, content, fileId, matchHistoryFileId, (eventType, event) => {
         if (eventType === 'activity') {

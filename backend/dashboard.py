@@ -492,6 +492,8 @@ Available ops:
 - {"op": "add_key_findings"} ← AI-written narrative bullets about what the data shows
 - {"op": "add_text", "title": "<optional>", "text": "<markdown note>"}  ← adds a text note/heading to annotate the dashboard
 - {"op": "add_insight", "query": "<web search query>", "title": "<short title>"}  ← runs live internet research and pins the findings to the dashboard
+- {"op": "add_alert", "widget_id": "<metric widget id>", "alert_op": "pct_drop|pct_rise|pct_change|lt|gt", "threshold": <number>, "cooldown_hours": 24}  ← notify on the next Update when a metric crosses a threshold
+- {"op": "remove_alert", "id": "<alert id>"}
 - {"op": "rename_dashboard", "title": "<new title>"}
 
 Vocabulary — users speak informally; map their words to widgets:
@@ -604,6 +606,30 @@ async def apply_ops(
                 if w is None:
                     raise ValueError(f"Widget '{op.get('id')}' not found")
                 widgets.remove(w)
+
+            elif kind == "add_alert":
+                # Owner-only threshold alert on a metric widget. The LLM emits the
+                # spec; evaluation (alerts.py) stays deterministic.
+                w = find(op.get("widget_id"))
+                if w is None or w.get("kind") != "metric":
+                    raise ValueError("Alerts attach to a metric widget")
+                dashboard.setdefault("alerts", []).append({
+                    "id": "a" + uuid.uuid4().hex[:8],
+                    "widget_id": op.get("widget_id"),
+                    "label": op.get("label") or w.get("label"),
+                    "op": op.get("alert_op") or op.get("condition") or "pct_change",
+                    "threshold": op.get("threshold", 10),
+                    "enabled": True,
+                    "cooldown_hours": op.get("cooldown_hours", 24),
+                    "last_value": None,
+                    "last_triggered_at": None,
+                })
+
+            elif kind == "remove_alert":
+                alerts = dashboard.get("alerts", [])
+                dashboard["alerts"] = [a for a in alerts if a.get("id") != op.get("id")]
+                if len(dashboard["alerts"]) == len(alerts):
+                    raise ValueError(f"Alert '{op.get('id')}' not found")
 
             elif kind == "move_widget":
                 # Swap with the previous/next widget OF THE SAME KIND, since the

@@ -1202,6 +1202,9 @@ async def sync_dashboard_endpoint(conversation_id: str, http_request: Request):
         conv.setdefault("pipeline", {})["data_summary"] = data_summary
 
     changes = await sync_dashboard(dashboard, fresh_df, data_summary)
+    # Threshold alerts fire off the freshly-updated metric values (owner-only).
+    from .alerts import evaluate_alerts
+    changes = evaluate_alerts(dashboard) + changes
     storage.save_conversation(conv)
     _track(http_request, "sync", {"conversation_id": conversation_id, "changes": len(changes)})
     return {"dashboard": dashboard, "changes": changes, "synced_at": dashboard.get("last_synced")}

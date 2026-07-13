@@ -151,6 +151,27 @@ Newest phase last.
 - `/api/sample-dashboard` is deliberately unauthenticated (zero-key onboarding) but was already in
   `_RATE_LIMITED`; added a test proving it 429s under burst so it can't be a free botnet/compute target.
 
+## Night 2 — Phase 2 (deep testing — in progress, post-tag; main stays deployable)
+
+Done since `v1.0.1-launch` (all additive on `main`): **2a** GitHub Actions CI (`.github/workflows/ci.yml`
+— pytest + next build + restore drill on every push/PR); **2d** structural security (route-enumeration:
+every endpoint must be classified into one auth posture or the build fails; allowlist deny-scan on
+/demo + /public); **2b** malformed-model-output suite; **2c** pathological data corpus (31 inputs);
+**2d** SQL read-only guard corpus. Two REAL bugs caught + fixed at the root:
+
+- **500 on a null op** (`apply_ops`): a model returning `null`/a bare string inside the ops array hit
+  `AttributeError` → 500 on the dashboard chat endpoint. Fixed: non-dict ops degrade to a note.
+- **SQL write-CTE bypass** (`_is_readonly_sql`): the connector's SELECT-only guard only checked the query
+  *starts* with SELECT/WITH, so `WITH x AS (INSERT … RETURNING *) SELECT …` and stacked `SELECT 1; DROP`
+  walked through — a data-modifying import on a user's DB. Now blocks stacked statements, write keywords
+  anywhere, `SELECT … INTO`, and dangerous funcs (pg_sleep/pg_read_file/load_file/benchmark/…).
+  **Ceiling (ponytail):** regex heuristic, not a full SQL parser; errs strict (a false reject is a
+  non-running import, a false accept could delete data). Swap for sqlparse only if a real bypass appears.
+
+Test count 182 → **258**. Remaining Phase 2 (multi-night): LLM cassettes/FakeLLM + silent-drop
+detection, ownership matrix, concurrency, e2e journeys (blocked here: e2e wants port 3000), visual
+regression, coverage floor.
+
 ## Night 2 — Phase 1 (ship-gate essentials)
 
 ### 1a — hero honesty: already correct

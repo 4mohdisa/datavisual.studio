@@ -1205,6 +1205,42 @@ class ConnectSourceRequest(BaseModel):
 
 _CONNECT_MAX_ROWS = 100_000
 
+# Data-modifying SQL keywords + dangerous functions that must never appear in a
+# read-only import query. Word-boundary matched, so a column named `update_time`
+# or `created_at` is fine. `replace`/`set` are deliberately absent — they are
+# common string functions / clause words and REPLACE INTO is already caught by
+# `into`.
+_SQL_WRITE_KEYWORDS = (
+    "insert", "update", "delete", "drop", "alter", "create", "truncate", "grant",
+    "revoke", "merge", "call", "exec", "execute", "copy", "into", "vacuum", "attach",
+)
+_SQL_DANGER_FUNCS = (
+    "pg_sleep", "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "lo_import",
+    "lo_export", "dblink", "load_file", "benchmark", "sleep", "waitfor",
+)
+_SQL_WRITE_RE = re.compile(
+    r"\b(" + "|".join(_SQL_WRITE_KEYWORDS + _SQL_DANGER_FUNCS) + r")\b", re.IGNORECASE)
+
+
+def _is_readonly_sql(query: str) -> bool:
+    """True only for a SINGLE read-only SELECT/WITH statement. Blocks the
+    bypasses a 'starts with SELECT' check misses: a data-modifying CTE
+    (WITH x AS (INSERT …) SELECT …), a stacked query (SELECT 1; DROP TABLE),
+    SELECT … INTO, and any write keyword anywhere. Errs strict — a false reject
+    is an import that doesn't run; a false accept could delete the user's data.
+    ponytail: regex heuristic, not a full SQL parser; add sqlparse only if a real
+    bypass this word-matching misses ever appears (no new dep until then)."""
+    if not isinstance(query, str):
+        return False
+    q = query.strip()
+    if not re.match(r"(?is)^(select|with)\b", q):
+        return False
+    body = q.rstrip().rstrip(";")      # a single trailing ; is fine…
+    if ";" in body:                    # …any other ; means stacked statements
+        return False
+    return not _SQL_WRITE_RE.search(body)
+
+
 # Connector configs are persisted (locally, gitignored) so dashboards backed by
 # a database/API can be refreshed with one click — the Power BI model.
 _SOURCES_PATH = Path("data/sources.json")
@@ -1234,9 +1270,16 @@ def _run_source_import(cfg: dict):
         if not cfg.get("connection_string") or not cfg.get("query"):
             raise HTTPException(status_code=400, detail="connection_string and query are required")
         # Import-only guard: this reads data, it must never mutate the user's
-        # database by accident.
-        if not re.match(r"(?is)^\s*(select|with)\b", cfg["query"]):
-            raise HTTPException(status_code=400, detail="Only SELECT (or WITH … SELECT) queries are allowed")
+        # database. A "starts with SELECT/WITH" check is NOT enough — a
+        # data-modifying CTE (WITH x AS (INSERT … RETURNING *) SELECT …) starts
+        # with WITH but writes, and a stacked `SELECT 1; DROP TABLE` starts with
+        # SELECT but runs two statements. See _is_readonly_sql.
+        if not _is_readonly_sql(cfg["query"]):
+            raise HTTPException(
+                status_code=400,
+                detail="Only a single read-only SELECT (or WITH … SELECT) query is allowed. "
+                       "Stacked statements, data-modifying keywords and SELECT … INTO are rejected.",
+            )
         from .ssrf import validate_sql_host, SSRFError
         try:
             validate_sql_host(cfg["connection_string"])

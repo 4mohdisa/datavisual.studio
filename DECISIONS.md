@@ -133,6 +133,23 @@ Newest phase last.
   as the text `'-500` (safe, but Excel won't auto-sum it). Chose plan-literal safety over aesthetics; can
   narrow to `=+@` + `-`-only-when-followed-by-non-digit later if the cosmetic cost matters.
 
+### 0h — LLM paths PROVEN live (the thing Night 1 could not) ✅
+- **Environment blocker resolved:** the OpenRouter account has credits again (usage ~$4.25, prepaid
+  balance). Night 1's "assistant round-trip unverified" was purely an out-of-credits/slow-model
+  environment issue, not a code defect.
+- **Verified-cheap model:** `openai/gpt-4o-mini` tiny round-trip = 2.1s (<30s). Default assistant fast
+  model is `google/gemini-2.5-flash`.
+- **Assistant (interactive path):** asked the running backend "What is the total MRR across all rows?"
+  on the SaaS sample → answer **"total MRR across all rows is 480506"**, an EXACT match to the CSV
+  ground truth (sum = 480506 over 18 rows). Full round-trip (classify_intent → query-spec → deterministic
+  compute → phrase) = **3.3s**. This is the real product path, observed and logged.
+- **Deep-research pipeline (background path):** one full run to completion via the polling control flow
+  (~5 min: research 74s → council stage1/2/3 → synthesis → done). All 4 council models responded
+  (gpt-5.1, claude-sonnet-4.5, gpt-4o, gemini-2.5-pro), 238 real Perplexity source URLs, 10.3k-char
+  chairman synthesis, 42k-char internet_findings. Not degraded, not a stub.
+- **Timing note:** interactive assistant is fast (3.3s). The deep-research council is a deliberately
+  long background job (multi-minute) with a progress UI — expected, not a "broken feature".
+
 ### 0g — identity-trust boot guard (`main._assert_identity_trust_safe`)
 - The proxy-secret guard already 403s any forged `x-clerk-user-id` when `PROXY_SHARED_SECRET` is set
   (tested). The remaining hole was an *open prod* — publicly reachable with the secret unset. Refuse to

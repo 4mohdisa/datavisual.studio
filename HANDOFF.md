@@ -1,74 +1,77 @@
-# Overnight run — handoff
+DEPLOY
 
-_What shipped, what didn't, and how to check it in five minutes._
+# Overnight run 2 — handoff
 
-## TL;DR
+_First line is the verdict. Deploy tag **`v1.0.1-launch`**, not `v1.0.0-launch`._
 
-**The app is deployable now.** Tag **`v1.0.0-launch`** is pushed and passes the full suite. The ship
-gate (phases 0–6) is complete: security fixes committed, data made safe (atomic writes + key
-encryption + backups), the host split made Vercel-ready (polling pipeline + direct upload), the broken
-assistant fixed (it computes answers now), UI/state gaps closed (real 404/500, mobile sidebar),
-the landing became a living-monitor hero, and launch hardening landed (zero-key onboarding, rate
-limiting, disk GC, CSP). Phase 7's **alerts** slice also shipped as post-launch upside.
+## Verdict: DEPLOY `v1.0.1-launch`
 
-Deploy `v1.0.0-launch` per **`DEPLOY_RUNBOOK.md`**. Everything after the tag is additive and green.
+`v1.0.0-launch` (Night 1) is **superseded and should NOT be deployed** — it shipped with a live SSRF
+critical and a suspected rate-limiter/poller collision. Night 2 (Phase 0 + Phase 1, the ship gate)
+fixed every pre-deploy blocker, proved the LLM paths live for the first time, and shipped the
+irreversible event instrumentation. Deploy **`v1.0.1-launch`** per `DEPLOY_RUNBOOK.md`.
+
+## Why this tag is safe
+
+**Phase 0 — pre-deploy blockers (all fixed + tested):**
+
+| Item | Fix | Proof |
+|---|---|---|
+| 0a SSRF in connectors (CRITICAL) | `backend/ssrf.py` — resolve host, validate resolved IPs, block loopback/private/link-local/CGNAT/metadata + IPv6/IPv4-mapped; revalidate redirects; scheme allowlist; SQL host guard; dev-only escape hatch refused in prod | 35 tests |
+| 0b rate-limiter vs poller | `/status` is GET + not in the limited set → poller can never 429 itself; made explicit + AppShell poll backoff | poll-volume test (200 GETs, 0×429) + positive control |
+| 0c XFF keying | limiter keys on X-Forwarded-For w/ `TRUSTED_PROXY_HOPS` (default 1); forged prefix can't bypass | tests both directions |
+| 0d orphaned jobs | boot sweep flips restart-orphaned `running`→`error`; frontend caps poll at ~15min | test + observed live ("swept 2 …") |
+| 0e SECRET_KEY loss | boot **refuses** if ciphertext won't decrypt with the current key (no silent "keys lost") | test |
+| 0f CSV injection | export prefixes `= + - @ \t \r` cells with `'` | — |
+| 0g forged identity | forged `x-clerk-user-id` w/o proxy secret → 403; refuse boot in a deployed env missing the secret | test |
+| 0h **prove the LLM paths** | assistant computed **total MRR = 480506** (exact) in **3.3s**; one full deep-research run to completion (~5min, 4/4 council models, 238 sources, 10.3k-char synthesis) | observed + logged live |
+| 0i restore drill | `make restore-test` — backup→restore→boot→**conversations load AND keys decrypt** | PASS |
+| 0j CORS preflight | env-driven origins (no wildcard); OPTIONS on the upload carve-out not swallowed | tests |
+| 0k sample endpoint | unauthenticated compute endpoint is hard rate-limited | test |
+
+**Phase 1 — ship-gate essentials:**
+
+- **1a** hero copy was already honest ("one click keeps it in sync"); repointed the primary CTA to /demo.
+- **1b** public **`/demo`** — a prebuilt sample dashboard via the read-only `SharedView`, no auth/key.
+- **1c** first-party **event instrumentation** (the irreversible piece): `anon_id` cookie on first visit,
+  the **anon→user `identify` stitch**, funnel + usage events, dedicated `/api/events` route (no proxy
+  exemption), privacy-safe props. **Events flow from this tag onward.** Verified live.
+- **1d** /demo and /share verified flawless at 390px.
 
 ## Verify in 5 minutes
 
 ```bash
-make install           # once
-make test-backend      # 115 pytest, hermetic, no network
-make build             # backend import + next build
-# with the stack running (make dev, or backend :8001 + frontend):
-make smoke-split       # 17 checks: SEO, %2f guards, golden path, /health, >5MB upload
+make install
+make test            # 182 pytest (hermetic) + next build — GREEN
+# with the stack running (make dev):
+BASE=http://localhost:3100 node scripts/smoke.mjs   # 16/16 — SEO, %2f guards, golden path, health
+make restore-test    # PASS — backup restores AND keys decrypt
 ```
-All of the above were green at tag time.
 
-## What shipped (per phase, each committed + pushed to `main`)
+Counts: pytest 115 → **182**. All green at tag time. `/api/demo` + `/api/events` verified live; the
+assistant + a full research pipeline observed end-to-end (see `DECISIONS.md` → Night 2 → 0h).
 
-| Phase | What | Proof |
-|---|---|---|
-| 0 | Committed the uncommitted tree **security-first** (the two `%2f` traversal fixes led) | 7 commits |
-| 1 | **Atomic JSON writes** + per-conversation lock; **Fernet key encryption** at rest + boot migration; `backup.sh` | +9 tests |
-| 2 | **Polling pipeline** by default (SSE behind `?stream=1`); **HMAC direct upload** (>4.5MB skips the proxy); `vercel.json`, conditional standalone, `/health`, security headers | verified live (40ms kickoff; 17/17 split smoke) |
-| 3 | **Assistant fixed**: intent router + `backend/query.py` deterministic query engine → answers are computed, not guessed; "Pin as widget" | +14 tests |
-| 4 | Real **404/500/error** boundaries; **mobile sidebar** slide-over; automated `UI_AUDIT.md` sweep | no true page overflow anywhere |
-| 5 | **Living-monitor hero** — a dashboard that changes while you watch (count-up, delta flip, "what changed" writes itself) | verified live |
-| 6 | **Zero-key onboarding** (3 samples + "Try it with sample data"); **rate limiting**; **disk GC**; **CSP** | +9 tests; 429 verified live |
-| SHIP | `v1.0.0-launch` tagged; `DEPLOY_RUNBOOK.md` | — |
-| 7 (partial) | **Threshold alerts** on metric widgets, owner-only, evaluated on sync | +7 tests |
+## What was NOT run here (and why it's fine)
 
-Test count went 71 → **115 pytest**; smoke 15 → **17** (+ the >5MB upload under `SPLIT=1`).
+- **`make e2e`** (Playwright) defaults to port **3000**, which is occupied by your other app on this
+  machine, so it couldn't bind cleanly. The same journeys are covered hermetically by the pytest
+  TestClient integration (upload→dashboard→edit→share→public→revoke, ownership 404s) **and** live by the
+  16-check smoke above. Run `make e2e` yourself on a box where 3000 is free.
+- **`make smoke-split`** (>5MB direct upload) needs `NEXT_PUBLIC_BACKEND_ORIGIN` + `SPLIT=1`; the base
+  16-check smoke is green.
 
-## What did NOT ship (remaining upside, in priority order)
+## What's next (Phases 2–9, more than one night — `main` is deployable at each commit)
 
-- **Phase 7 remainder** — the *scheduled* sync (`backend/scheduler.py` asyncio lifespan task),
-  email digests (`email_send.py` / `digest.py` via Resend), and the **unsubscribe** flow. Alerts and
-  the manual "Update" already fire; automating them on a timer + emailing the digest is the next step.
-  Deliberately deferred: the background task + external email + unsubscribe security are the riskiest
-  parts and shouldn't land hastily right after a clean launch tag. A frontend **alert bell** on metric
-  hover (handler-gated so it can't render in `SharedView`) is also pending — alerts work via the chat
-  today ("alert me if revenue drops 10%").
-- **Phase 8** — dashboard customization: drag/resize widgets, cross-filtering, saved views, duplicate.
-- **Phase 9** — research quality: two-round search, per-claim citations, disagreement panel, research
-  cache, spend meter, council picker.
+Phase 2 deep testing (CI, LLM cassettes, pathological data corpus, visual regression) **before** Phase 3
+theme-token refactor (tokenise with zero visual change first) **before** Phase 4 landing/onboarding
+rebuild. Then analytical depth (5), the scheduler/digest/unsubscribe to complete the living monitor (6),
+research quality (7), dashboard customisation (8), close-out (9). See `OVERNIGHT_PLAN_2.md`.
 
-## Things to confirm with me (also in `DECISIONS.md`)
+## Confirm with me (in `DECISIONS.md` → "Assumptions to confirm")
 
-1. **Single replica is assumed everywhere** — rate-limit buckets, the per-conversation lock, the
-   single-use upload nonce, and (when built) the scheduler are all in-process. Don't run >1 backend
-   replica without addressing this.
-2. **`SECRET_KEY` is required in prod** and losing it means users re-enter their API keys.
-3. The **assistant's full LLM round-trip couldn't be verified live tonight** — the dev OpenRouter key's
-   fast model was >90s slow in this sandbox. The deterministic query engine + router are tested; the LLM
-   glue mirrors the already-working editor. Please run one real question against it.
-4. **CSP `script-src` is permissive** (`'unsafe-inline' 'unsafe-eval' https:`) because Next inlines
-   scripts and Plotly evals; tighten to nonces after verifying against the live Clerk domain.
-5. The **backend host RAM** — this backend loads pandas + xgboost + scikit-learn + Chromium; if the EC2
-   box is small, give it a separate instance (see runbook §0).
-
-## Docs on disk
-
-`DEPLOY_RUNBOOK.md` (go-live), `DECISIONS.md` (every non-obvious call + assumptions), `UI_AUDIT.md`
-(the sweep), `PROJECT_AUDIT.md` + `PROJECT_CONTEXT.md` (the map), `CLAUDE.md` (gotchas, updated),
-`OVERNIGHT_PLAN.md` (the plan I executed).
+1. **Single replica assumed** — rate-limit buckets, per-conversation lock, upload nonce, events limiter
+   are all in-process. Don't run >1 backend replica without addressing it.
+2. **`SECRET_KEY` travels WITH `data/`** — back them up together; a fresh key against restored data now
+   **refuses to boot** (0e) rather than silently losing keys.
+3. Enforce **IMDSv2** on the instance regardless of the code SSRF fix (runbook §0.3) — defence in depth.
+4. Connector **sqlite/file DB URLs** are a separate local-file-read follow-up (flagged, out of 0a scope).

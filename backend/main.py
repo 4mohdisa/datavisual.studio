@@ -1052,6 +1052,11 @@ def _run_source_import(cfg: dict):
         # database by accident.
         if not re.match(r"(?is)^\s*(select|with)\b", cfg["query"]):
             raise HTTPException(status_code=400, detail="Only SELECT (or WITH … SELECT) queries are allowed")
+        from .ssrf import validate_sql_host, SSRFError
+        try:
+            validate_sql_host(cfg["connection_string"])
+        except SSRFError as e:
+            raise HTTPException(status_code=400, detail=f"Refused to connect to that database host: {e}")
         try:
             from sqlalchemy import create_engine
             engine = create_engine(cfg["connection_string"])
@@ -1067,11 +1072,13 @@ def _run_source_import(cfg: dict):
     if cfg.get("type") == "api":
         if not cfg.get("url"):
             raise HTTPException(status_code=400, detail="url is required")
-        import httpx
+        from .ssrf import guarded_get, SSRFError
         try:
-            resp = httpx.get(cfg["url"], headers=cfg.get("headers") or {}, timeout=30.0, follow_redirects=True)
+            resp = guarded_get(cfg["url"], headers=cfg.get("headers") or {})
             resp.raise_for_status()
             payload = resp.json()
+        except SSRFError as e:
+            raise HTTPException(status_code=400, detail=f"Refused to fetch that URL: {e}")
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"API request failed: {e}")
         # Accept a bare array, or the first array value inside an object

@@ -100,3 +100,23 @@ Newest phase last.
   evals — tighten to nonces post-launch once verified against the live Clerk domain. It does not weaken
   the object-src/base-uri/frame-ancestors protections.
 - Rate-limit defaults (20/min) are a conservative floor — tune once you see real traffic.
+
+## Night 2 — Phase 0 (pre-deploy blockers)
+
+### 0a — SSRF egress guard on the data connectors (`backend/ssrf.py`)
+- **The vuln:** `POST /api/connect` fetched a user-supplied REST URL and connected to a user-supplied
+  DB host **server-side, with no egress restriction** — reachable: AWS metadata `169.254.169.254`,
+  localhost, the private network. Fixed at the single choke point (`_run_source_import`).
+- **Design:** resolve the host, validate the **resolved IPs** (not the string) against `not is_global`
+  **plus** an explicit denylist (version-robust across Python's is_private/is_global registry churn);
+  unwrap IPv4-mapped IPv6; scheme allowlist http/https; manual redirect loop that re-validates every
+  hop (cap 3); response size cap. Same host guard on the SQL connection string via `make_url`.
+- **`SSRF_ALLOW_PRIVATE=1`** is a dev-only escape hatch, auto-refused when `PROXY_SHARED_SECRET` is set
+  (the marker of a publicly-reachable prod backend) — a prod misconfig can't open egress.
+- **Known residual gap (accepted, per plan):** we validate immediately before the request, but httpx and
+  the DB driver re-resolve DNS themselves → a narrow TOCTOU window against a same-host DNS-rebinding
+  attacker. Pinning to the validated IP isn't practical without breaking TLS SNI for legit https APIs.
+  Mitigated by IMDSv2 (runbook §0.3) at the instance level.
+- **sqlite / host-less DB drivers are skipped** by the host guard (no network host). A `sqlite:///`
+  connection string pointing at an arbitrary local file is a *local-file-read* concern, not SSRF —
+  **flagged as a separate follow-up**, out of Phase 0a's scope.

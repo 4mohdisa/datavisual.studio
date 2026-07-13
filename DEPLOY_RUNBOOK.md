@@ -20,6 +20,15 @@ Tag to deploy: `git checkout v1.0.0-launch`.
    is the most likely failure.
 2. Chromium must be present on the backend host (chart PNGs + PDF export): `sudo apt-get install -y chromium-browser`
    (the Docker image already installs it; `BROWSER_PATH` is set to `/usr/bin/chromium` there).
+3. **Enforce IMDSv2 on the EC2 instance (do this regardless of the code fix).** The connector SSRF guard
+   (`backend/ssrf.py`) blocks `169.254.169.254` in application code, but instance-level IMDSv2 is
+   defence-in-depth: it makes the metadata endpoint unreachable without a signed token even if the code
+   guard is ever bypassed. The code fix and the instance setting are independent — you want **both**.
+   ```bash
+   # Require IMDSv2 (token) + drop the hop limit so containers can't reach it:
+   aws ec2 modify-instance-metadata-options --instance-id <id> \
+     --http-tokens required --http-put-response-hop-limit 1 --http-endpoint enabled
+   ```
 
 ## 1. Secrets (generate once)
 

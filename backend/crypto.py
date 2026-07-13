@@ -79,6 +79,42 @@ def decrypt(value: str | None) -> str | None:
         return None
 
 
+def verify_key_decryptable() -> None:
+    """Boot guard (Phase 0e). If users.json holds encrypted API keys that the
+    current SECRET_KEY cannot decrypt, REFUSE to start.
+
+    The disaster case: a new box with a fresh SECRET_KEY and a restored `data/`.
+    `decrypt()` would return None for every key, so the app would silently look
+    like every user lost their key — a "UI bug" that makes users re-paste keys
+    into a system that is quietly broken. Failing loud on boot is the only safe
+    behaviour. Raises RuntimeError naming the cause and the fix."""
+    from . import users
+
+    try:
+        data = json.loads(users.USERS_PATH.read_text())
+    except Exception:
+        return  # no registry yet → nothing encrypted to verify
+    saw_ciphertext = False
+    for user in data.values():
+        for k, v in (user.get("settings") or {}).items():
+            if k.endswith("_api_key") and is_encrypted(v):
+                saw_ciphertext = True
+                try:
+                    _fernet().decrypt(v[len(_PREFIX):].encode())
+                    return  # one clean decrypt proves the key matches the data
+                except InvalidToken:
+                    continue
+    if saw_ciphertext:
+        raise RuntimeError(
+            "SECRET_KEY does not match the encrypted API keys in data/users.json. "
+            "This is almost always a fresh SECRET_KEY paired with a restored data/ "
+            "directory — SECRET_KEY travels WITH data/, back them up together. "
+            "Fix: restore the original SECRET_KEY. If the mismatch is intentional, "
+            "clear the *_api_key fields in data/users.json and users will re-enter "
+            "their keys. Refusing to start rather than silently losing every key."
+        )
+
+
 def migrate_user_keys() -> int:
     """Encrypt any plaintext ``*_api_key`` in users.json in place (idempotent).
     Returns the number of keys migrated. Called once at backend startup."""

@@ -38,8 +38,10 @@ openssl rand -hex 32   # → SECRET_KEY           (encrypts users' API keys — 
 openssl rand -hex 24   # → ADMIN_PASSWORD
 ```
 
-- `SECRET_KEY` **must be set in prod** or the backend refuses to start. Losing it later means users
-  re-enter their API keys (degraded, not catastrophic).
+- `SECRET_KEY` **must be set in prod** or the backend refuses to start. **`SECRET_KEY` travels WITH
+  `data/` — back them up together.** It encrypts users' API keys at rest; a fresh key against a restored
+  `data/` can't decrypt them. As of 0e the backend now **refuses to boot** on that mismatch (rather than
+  silently showing every user as key-less), naming the fix in the error — restore the original key.
 - `PROXY_SHARED_SECRET` must be **byte-identical** on Vercel and AWS.
 
 ## 2. Clerk

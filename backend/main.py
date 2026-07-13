@@ -82,8 +82,31 @@ Path(EXPORTS_DIR).mkdir(parents=True, exist_ok=True)
 from contextlib import asynccontextmanager
 
 
+def _assert_identity_trust_safe() -> None:
+    """Boot guard (Phase 0g). The backend trusts `x-clerk-user-id` from the
+    proxy to scope every user's data. Without PROXY_SHARED_SECRET the
+    proxy-secret guard is a no-op, so anyone who can reach the backend could
+    forge that header and impersonate any user. In a deployed environment
+    (FRONTEND_ORIGIN set) refuse to start rather than trust the internet's idea
+    of who the caller is. docker-compose already requires the secret; this
+    catches a direct/bare run that skipped it."""
+    if os.getenv("FRONTEND_ORIGIN") and not os.getenv("PROXY_SHARED_SECRET"):
+        raise RuntimeError(
+            "PROXY_SHARED_SECRET is required in production. FRONTEND_ORIGIN is set "
+            "(a deployed environment) but PROXY_SHARED_SECRET is not — the backend "
+            "would trust a forgeable X-Clerk-User-Id header from anyone and allow "
+            "user impersonation. Generate one (`openssl rand -hex 32`) and set it "
+            "identically on the backend and the Next proxy, then restart."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Boot guards that MUST stop the server (never swallowed): a production
+    # identity-trust misconfig (0g) and an undecryptable key set (0e).
+    _assert_identity_trust_safe()
+    from .crypto import verify_key_decryptable
+    verify_key_decryptable()
     # Encrypt any plaintext BYO API keys on boot (idempotent). Best-effort — a
     # failure here must never stop the API from starting.
     try:

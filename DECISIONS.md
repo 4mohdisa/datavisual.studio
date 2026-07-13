@@ -120,3 +120,22 @@ Newest phase last.
 - **sqlite / host-less DB drivers are skipped** by the host guard (no network host). A `sqlite:///`
   connection string pointing at an arbitrary local file is a *local-file-read* concern, not SSRF —
   **flagged as a separate follow-up**, out of Phase 0a's scope.
+
+### 0e — SECRET_KEY-mismatch boot guard (`crypto.verify_key_decryptable`)
+- If users.json holds ciphertext that the current key can't decrypt, the backend now **refuses to boot**
+  (rather than `decrypt()` silently returning None → "everyone lost their key", which reads as a UI bug).
+  Runs **before** the plaintext migration so freshly-encrypted-good values can't mask old-bad ones. Only
+  raises when there's ciphertext AND *nothing* decrypts (a single corrupt token doesn't brick boot).
+
+### 0f — CSV-injection guard on the data-table export (`DashboardWidgets.jsx`)
+- Client-side CSV export now prefixes any cell starting with `= + - @ \t \r` with `'`. **Assumption to
+  confirm:** per the plan's char set this includes leading `-`, so a negative number like `-500` exports
+  as the text `'-500` (safe, but Excel won't auto-sum it). Chose plan-literal safety over aesthetics; can
+  narrow to `=+@` + `-`-only-when-followed-by-non-digit later if the cosmetic cost matters.
+
+### 0g — identity-trust boot guard (`main._assert_identity_trust_safe`)
+- The proxy-secret guard already 403s any forged `x-clerk-user-id` when `PROXY_SHARED_SECRET` is set
+  (tested). The remaining hole was an *open prod* — publicly reachable with the secret unset. Refuse to
+  boot when `FRONTEND_ORIGIN` is set (the deploy marker) but `PROXY_SHARED_SECRET` is not. **Signal
+  choice:** `FRONTEND_ORIGIN` because docker-compose already hard-requires the secret (`:?set in .env`),
+  so only a bare/direct run can reach the unsafe state, and that path sets `FRONTEND_ORIGIN`.

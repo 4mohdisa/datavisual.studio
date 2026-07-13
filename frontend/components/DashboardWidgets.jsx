@@ -314,7 +314,10 @@ function DataTable({ columns, rows, onRemove, widgetId }) {
 
   const downloadCsv = () => {
     const esc = (v) => {
-      const s = String(v ?? '');
+      let s = String(v ?? '');
+      // CSV injection (0f): a cell beginning =, +, -, @, tab or CR runs as a
+      // formula in Excel/Sheets. Neutralise by prefixing an apostrophe.
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const csv = [columns.map(esc).join(','), ...filtered.map((r) => columns.map((c) => esc(r[c])).join(','))].join('\n');

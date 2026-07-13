@@ -60,12 +60,32 @@ assistant + a full research pipeline observed end-to-end (see `DECISIONS.md` →
 - **`make smoke-split`** (>5MB direct upload) needs `NEXT_PUBLIC_BACKEND_ORIGIN` + `SPLIT=1`; the base
   16-check smoke is green.
 
-## What's next (Phases 2–9, more than one night — `main` is deployable at each commit)
+## Phase 2 progress since the tag (all on `main`, past `v1.0.1-launch`, each commit green)
 
-Phase 2 deep testing (CI, LLM cassettes, pathological data corpus, visual regression) **before** Phase 3
-theme-token refactor (tokenise with zero visual change first) **before** Phase 4 landing/onboarding
-rebuild. Then analytical depth (5), the scheduler/digest/unsubscribe to complete the living monitor (6),
-research quality (7), dashboard customisation (8), close-out (9). See `OVERNIGHT_PLAN_2.md`.
+The tag is the deploy point; these are additive improvements you can re-tag later (Phase 9 → v1.1.0):
+
+- **2a CI** — `.github/workflows/ci.yml` runs pytest + next build + the restore drill on every push/PR.
+  *(Check its first run on GitHub — I couldn't observe it here, `gh` isn't authed; every command in it
+  passes locally.)*
+- **2d structural security** — a route-enumeration test fails the build if any endpoint isn't classified
+  into one auth posture (so a new route can't ship without a conscious auth decision); + allowlist
+  deny-scan on /demo and /public.
+- **2b malformed-model-output** — caught + fixed a real **500 on a null op** in `apply_ops`.
+- **2c pathological data corpus** — 31 weird inputs → clean analysis or clean 4xx, never a 500 or hang.
+- **2d SQL guard** — caught + fixed a real **write-CTE / stacked-query bypass** in the connector
+  (`WITH x AS (INSERT …) SELECT …` used to pass). Now blocks writes, stacked statements, `SELECT … INTO`,
+  and dangerous functions.
+
+pytest **182 → 258**. Two real bugs found and fixed by the new tests.
+
+## Still to do (Phases 2 remainder → 9, more than one night)
+
+Phase 2 remainder: LLM cassettes/FakeLLM + silent-drop detection ("council ran with 2 of 4 models" must
+say so), ownership matrix, concurrency, e2e journeys (blocked here — e2e wants port 3000, taken by your
+other app), visual regression, coverage floor. **Then** Phase 3 theme-token refactor (tokenise with ZERO
+visual change first, snapshots pixel-identical) **before** Phase 4 landing/onboarding rebuild. Then
+analytical depth (5), scheduler/digest/unsubscribe to complete the living monitor (6), research quality
+(7), dashboard customisation (8), close-out + v1.1.0 (9). See `OVERNIGHT_PLAN_2.md`.
 
 ## Confirm with me (in `DECISIONS.md` → "Assumptions to confirm")
 

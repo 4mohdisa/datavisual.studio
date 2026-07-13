@@ -132,12 +132,18 @@ app = FastAPI(
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Enable CORS for local development
+# CORS (0j). Env-driven allowlist, NEVER a wildcard. In prod set ALLOWED_ORIGINS
+# (comma-separated) to your exact origins; it fully replaces the dev defaults so
+# localhost isn't trusted in production. Otherwise fall back to the dev origins
+# plus FRONTEND_ORIGIN. Only /api/upload-direct is actually hit cross-origin by
+# the browser; everything else goes through the same-origin Next proxy.
+_env_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+_allowed_origins = _env_origins or [o for o in [
+    "http://localhost:5173", "http://localhost:3000", os.getenv("FRONTEND_ORIGIN"),
+] if o]
 app.add_middleware(
     CORSMiddleware,
-    # Production: set FRONTEND_ORIGIN to your deployed Next.js URL.
-    allow_origins=[o for o in ["http://localhost:5173", "http://localhost:3000",
-                               os.getenv("FRONTEND_ORIGIN")] if o],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -4,7 +4,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install dev backend frontend build test test-backend test-frontend \
-        smoke smoke-split e2e e2e-install ui-audit gc backup clean
+        smoke smoke-split e2e e2e-install ui-audit gc backup restore-test clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -62,6 +62,9 @@ gc: ## Sweep orphaned uploads/exports (never touches conversations). Cron this n
 
 backup: ## Back up data/ (the whole database) to ./backups. Cron this nightly.
 	./scripts/backup.sh
+
+restore-test: ## Prove a backup restores: conversations load AND encrypted keys decrypt.
+	./scripts/restore-test.sh
 
 clean: ## Remove build artifacts and caches
 	rm -rf frontend/.next frontend/test-results frontend/playwright-report

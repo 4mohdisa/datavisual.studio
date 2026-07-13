@@ -58,6 +58,9 @@ openssl rand -hex 24   # → ADMIN_PASSWORD
 git clone <repo> && cd datavisual.studio && git checkout v1.0.0-launch
 cp .env.example .env
 # set in .env: PROXY_SHARED_SECRET, SECRET_KEY, ADMIN_PASSWORD, FRONTEND_ORIGIN=https://<your-vercel-domain>
+# optional: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com  — CORS allowlist; when set it
+#   REPLACES the localhost dev defaults so prod never trusts localhost. NEVER a wildcard. TRUSTED_PROXY_HOPS
+#   defaults to 1 (rate limiter reads X-Forwarded-For that many hops in) — raise it if you add proxies.
 uv sync
 sudo apt-get install -y chromium-browser
 # systemd unit recommended (see below); quick start:
@@ -142,6 +145,15 @@ curl -s -o /dev/null -w "%{http_code}\n" 'https://app.example.com/api/backend/ap
 15 3 * * * cd /home/ubuntu/datavisual.studio && BACKUP_KEEP=14 BACKUP_S3_URI=s3://bucket/dvs ./scripts/backup.sh >> /var/log/dvs-backup.log 2>&1
 # nightly 04:00 — GC orphaned uploads/exports (never touches conversations)
 0 4 * * * cd /home/ubuntu/datavisual.studio && uv run python -m backend.gc >> /var/log/dvs-gc.log 2>&1
+```
+
+**A backup you have never restored is a hypothesis.** Prove the round-trip with `make restore-test`
+(backs up a synthetic `data/`, restores it, boots the storage+crypto layer, asserts conversations load
+**and** encrypted keys still decrypt). Run it after any change to backup/restore or key encryption, and
+periodically (a monthly cron is cheap insurance):
+```cron
+# monthly 05:00 on the 1st — prove the backup format still restores + decrypts
+0 5 1 * * cd /home/ubuntu/datavisual.studio && make restore-test >> /var/log/dvs-restore-test.log 2>&1
 ```
 
 ## 7. Operational notes

@@ -133,6 +133,24 @@ Newest phase last.
   as the text `'-500` (safe, but Excel won't auto-sum it). Chose plan-literal safety over aesthetics; can
   narrow to `=+@` + `-`-only-when-followed-by-non-digit later if the cosmetic cost matters.
 
+### 0i — backup restore drill (`scripts/restore-test.sh`, `make restore-test`)
+- Hermetic: synthetic data/ (a conversation + a REAL encrypted key) → backup.sh → restore to scratch →
+  boot the storage+crypto layer against it → assert conversations LOAD **and** encrypted keys DECRYPT.
+  **"Boot against it"** is interpreted as running the boot guards (`verify_key_decryptable`) + the load
+  path (`list_conversations`) against the restored dir — the meaningful part — not a full uvicorn boot,
+  which is slow/flaky and proves nothing extra. Verified PASS. Monthly cron added to the runbook.
+
+### 0j — CORS preflight + no-wildcard origins
+- Middleware order confirmed: the guard middlewares run OUTSIDE CORS, but the proxy-secret guard exempts
+  `/api/upload-direct` and the rate limiter only touches POST, so the OPTIONS preflight for the direct-
+  upload carve-out reaches CORS and returns 200 (tested). Origins are now env-driven via `ALLOWED_ORIGINS`
+  (comma-sep; when set it fully replaces the localhost dev defaults so prod never trusts localhost),
+  falling back to dev-localhost + `FRONTEND_ORIGIN`. **Never a wildcard** (asserted in a test).
+
+### 0k — sample-dashboard endpoint gated
+- `/api/sample-dashboard` is deliberately unauthenticated (zero-key onboarding) but was already in
+  `_RATE_LIMITED`; added a test proving it 429s under burst so it can't be a free botnet/compute target.
+
 ### 0h — LLM paths PROVEN live (the thing Night 1 could not) ✅
 - **Environment blocker resolved:** the OpenRouter account has credits again (usage ~$4.25, prepaid
   balance). Night 1's "assistant round-trip unverified" was purely an out-of-credits/slow-model

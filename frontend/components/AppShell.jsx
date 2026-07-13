@@ -129,7 +129,7 @@ function AppShell() {
   const pollingRef = useRef(null);
 
   const stopPolling = () => {
-    if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; }
+    if (pollingRef.current) { clearTimeout(pollingRef.current); pollingRef.current = null; }
   };
 
   useEffect(() => {
@@ -279,14 +279,32 @@ function AppShell() {
   };
 
   // ---- background polling for a reloaded, still-running pipeline ----
+  // 0b: back off (1.5s → 3s → 5s) — every poll is a Vercel invocation.
+  // 0d: cap total poll time; a spinner that never ends is worse than a failure.
+  const POLL_MAX_MS = 15 * 60 * 1000;
+  const pollDelay = (elapsed) => (elapsed < 15000 ? 1500 : elapsed < 60000 ? 3000 : 5000);
   const startPolling = (id) => {
     stopPolling();
-    pollingRef.current = setInterval(async () => {
+    const started = Date.now();
+    const tick = async () => {
+      const elapsed = Date.now() - started;
+      if (elapsed > POLL_MAX_MS) {
+        stopPolling();
+        setCurrentConversation((prev) =>
+          prev && prev.id === id
+            ? { ...prev, messages: ensureErrorMessage([...prev.messages],
+                'This is taking longer than expected and may have stalled — please try running it again.') }
+            : prev
+        );
+        setIsLoading(false);
+        return;
+      }
       let s;
       try {
         s = await api.getStatus(id);
       } catch {
-        return; // transient — keep polling
+        pollingRef.current = setTimeout(tick, pollDelay(elapsed)); // transient — keep polling
+        return;
       }
       // Advance the on-screen progress indicator to the latest stage.
       setCurrentConversation((prev) => {
@@ -305,14 +323,18 @@ function AppShell() {
         } catch { /* ignore */ }
         loadConversations();
         setIsLoading(false);
+        return;
       } else if (s.status === 'error') {
         stopPolling();
         setCurrentConversation((prev) =>
           prev && prev.id === id ? { ...prev, messages: ensureErrorMessage([...prev.messages], s.error_message) } : prev
         );
         setIsLoading(false);
+        return;
       }
-    }, 1500);
+      pollingRef.current = setTimeout(tick, pollDelay(elapsed));
+    };
+    pollingRef.current = setTimeout(tick, 1500);
   };
 
   // ---- conversation lifecycle ----

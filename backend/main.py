@@ -91,6 +91,10 @@ async def lifespan(app: FastAPI):
         migrate_user_keys()
     except Exception as e:  # pragma: no cover
         print(f"⚠️  key migration skipped: {e}")
+    # Fail interrupted pipelines from a previous process so their pollers stop.
+    n = _sweep_orphaned_jobs()
+    if n:
+        print(f"↻ swept {n} interrupted pipeline(s) to error on boot")
     yield
 
 
@@ -156,13 +160,37 @@ _rate_limiter = RateLimiter(
 )
 _RATE_LIMITED = ("/api/analyse", "/api/upload", "/api/upload-direct", "/api/connect", "/api/sample-dashboard")
 
+# Behind a proxy (Caddy/Cloudflare/Vercel) every request shares one socket IP,
+# so keying the limiter on the socket rate-limits the whole userbase as one
+# client. Trust the last N X-Forwarded-For entries (the ones our own proxies
+# appended); everything left of them is client-supplied and spoofable.
+_TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "1"))
+
+
+def _client_ip(request: Request) -> str:
+    """Real client IP for rate-limiting, XFF-aware. With hops=1 the rightmost
+    XFF entry (appended by our single trusted proxy) is authoritative; a
+    client-forged prefix is ignored. hops=0 → no proxy, trust only the socket."""
+    if _TRUSTED_PROXY_HOPS > 0:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                # The entry our outermost trusted proxy appended sits `hops` from
+                # the right; clamp for a shorter-than-expected chain.
+                return parts[max(0, len(parts) - _TRUSTED_PROXY_HOPS)]
+    return request.client.host if request.client else "?"
+
 
 @app.middleware("http")
 async def _rate_limit(request: Request, call_next):
     path = request.url.path
-    limited = path.endswith("/chat") and path.startswith("/api/dashboard") or path in _RATE_LIMITED
+    # Status polling (GET /api/conversations/{id}/status, ~40/min for a long
+    # pipeline) is deliberately NOT here and the limiter fires on POST only, so
+    # a running analysis can never rate-limit its own poller. Guarded by a test.
+    limited = (path.endswith("/chat") and path.startswith("/api/dashboard")) or path in _RATE_LIMITED
     if request.method == "POST" and limited:
-        ip = (request.client.host if request.client else "?")
+        ip = _client_ip(request)
         user = request.headers.get("x-clerk-user-id") or "anon"
         if not _rate_limiter.check(f"u:{user}", f"ip:{ip}"):
             return JSONResponse({"detail": "Too many requests — slow down a moment."}, status_code=429)
@@ -559,6 +587,27 @@ def update_conversation_status(
     if error_message is not None:
         conv["error_message"] = error_message
     storage.save_conversation(conv)
+
+
+def _sweep_orphaned_jobs() -> int:
+    """Phase 0d — a background pipeline task (asyncio.create_task) dies with the
+    process. After a restart, any conversation left in a non-terminal `running`
+    state would sit there forever and the frontend would poll it forever. On
+    boot, flip those to `error` so the poller stops with an honest message.
+    Returns the count swept."""
+    swept = 0
+    try:
+        for meta in storage.list_conversations():
+            conv = storage.get_conversation(meta["id"])
+            if conv and conv.get("status") == "running":
+                update_conversation_status(
+                    meta["id"], "error",
+                    error_message="This run was interrupted by a server restart — please run it again.",
+                )
+                swept += 1
+    except Exception as e:  # pragma: no cover
+        print(f"⚠️  orphaned-job sweep skipped: {e}")
+    return swept
 
 
 @app.get("/api/conversations/{conversation_id}/status")

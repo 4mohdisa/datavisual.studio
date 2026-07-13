@@ -32,13 +32,15 @@ export default function SharedView({ data }) {
       {/* Top bar — brand + read-only badge + build-your-own CTA */}
       <div className="sticky top-0 z-40 border-b border-[var(--border)] bg-[oklch(0.12_0_0/0.85)] backdrop-blur">
         <div className="max-w-[1400px] mx-auto px-6 h-[56px] flex items-center gap-3">
-          <Link href="/" className="text-[14.5px] font-semibold hover:opacity-80 transition">datavisual.studio</Link>
-          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-[var(--border-2)] text-[11px] text-[var(--muted)]">
-            <Eye size={11} strokeWidth={1.5} /> Read-only shared view
+          <Link href="/" className="shrink-0 text-[14.5px] font-semibold hover:opacity-80 transition">datavisual.studio</Link>
+          {/* Badge is secondary — drop it on the narrowest screens so the brand
+              and CTA always fit on one line. */}
+          <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-[var(--border-2)] text-[11px] text-[var(--muted)]">
+            <Eye size={11} strokeWidth={1.5} /> {data.is_demo ? 'Live demo · sample data' : 'Read-only shared view'}
           </span>
           <Link
             href="/studio"
-            className="ml-auto inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-[var(--new-chat)] text-[var(--background)] text-[13px] font-medium hover:bg-[var(--new-chat-hover)] transition"
+            className="ml-auto shrink-0 whitespace-nowrap inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-[var(--new-chat)] text-[var(--background)] text-[13px] font-medium hover:bg-[var(--new-chat-hover)] transition"
           >
             Build your own <ArrowRight size={14} strokeWidth={1.5} />
           </Link>

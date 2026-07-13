@@ -2,6 +2,7 @@
 
 import { Component } from 'react';
 import { api } from '../lib/api';
+import { track } from '../lib/analytics';
 
 // 7.2 — top-level error boundary. On any unhandled render error, shows a clean
 // recovery screen and logs the error to the backend (best-effort).
@@ -22,6 +23,7 @@ export default class ErrorBoundary extends Component {
         stack: String(error?.stack || ''),
         component_stack: String(info?.componentStack || ''),
       });
+      track('error_shown', { message: String(error?.message || error).slice(0, 200) });
     } catch {
       /* logging is best-effort */
     }

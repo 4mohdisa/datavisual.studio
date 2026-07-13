@@ -249,24 +249,82 @@ def _stamp_owner(conv: dict, http_request: Request) -> None:
         conv["owner_id"] = user["id"]
 
 
-_ANALYTICS_PATH = Path("data/analytics.jsonl")
+from . import analytics
+_ANALYTICS_PATH = analytics.ANALYTICS_PATH  # back-compat alias (tests patch both)
 
 
-def _track(http_request: Request, kind: str, meta: dict | None = None) -> None:
-    """Append one analytics event (local jsonl — feeds the admin panel).
-    Best-effort: must never fail a request."""
+def _track(http_request: Request, event: str, props: dict | None = None) -> None:
+    """Append one product-analytics event (1c). anon_id/session_id/path come
+    from headers `lib/api.js` attaches, so server-side events stitch to the same
+    first-party visitor as the client-side funnel events. Best-effort."""
     try:
         user = user_from_request(http_request)
-        _ANALYTICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(_ANALYTICS_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "ts": datetime.utcnow().isoformat() + "Z",
-                "user_id": user["id"] if user else None,
-                "kind": kind,
-                "meta": meta,
-            }) + "\n")
+        h = http_request.headers
+        analytics.record_event(
+            event,
+            user_id=user["id"] if user else None,
+            anon_id=h.get("x-anon-id"),
+            session_id=h.get("x-session-id"),
+            path=h.get("x-page-path") or h.get("referer"),
+            props=props,
+        )
     except Exception:
         pass
+
+
+def _is_first_dashboard(user_id: str | None) -> bool:
+    """True if this user has no dashboard-mode conversation yet — for the
+    `first_dashboard_created` activation event. Anonymous (open dev) → skip."""
+    if not user_id:
+        return False
+    try:
+        return not any(
+            c.get("owner_id") == user_id and c.get("mode") == "dashboard"
+            for c in storage.list_conversations()
+        )
+    except Exception:
+        return False
+
+
+# Dedicated per-IP limiter for the public event sink: keying it on the shared
+# `u:anon` bucket would let one anonymous visitor's events starve everyone
+# else's. Generous — events are cheap appends; this only stops log-flooding.
+_events_limiter = RateLimiter(
+    capacity=int(os.getenv("EVENTS_BURST", "60")),
+    refill_per_min=int(os.getenv("EVENTS_PER_MIN", "120")),
+)
+
+
+class EventRequest(BaseModel):
+    event: str
+    anon_id: Optional[str] = None
+    session_id: Optional[str] = None
+    path: Optional[str] = None
+    referrer: Optional[str] = None
+    utm: Optional[Dict[str, Any]] = None
+    props: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/events")
+async def ingest_event(request: EventRequest, http_request: Request):
+    """First-party analytics ingest (1c). Funnel events (landing_view, demo_view,
+    signup_*, identify, error_shown) arrive here from lib/analytics.js via the
+    dedicated Next /api/events route. record_event's allowlist drops unknown
+    names; props are cleaned to flat scalars so a dataset value can't leak in."""
+    if not _events_limiter.allow(f"ip:{_client_ip(http_request)}"):
+        return JSONResponse({"ok": False}, status_code=429)
+    user = user_from_request(http_request)
+    analytics.record_event(
+        request.event,
+        user_id=user["id"] if user else None,
+        anon_id=request.anon_id or http_request.headers.get("x-anon-id"),
+        session_id=request.session_id or http_request.headers.get("x-session-id"),
+        path=request.path,
+        referrer=request.referrer,
+        utm=request.utm,
+        props=request.props,
+    )
+    return {"ok": True}
 
 
 class ConversationMetadata(BaseModel):
@@ -483,22 +541,15 @@ async def admin_overview(http_request: Request):
         if not o["last_active"] or c["created_at"] > o["last_active"]:
             o["last_active"] = c["created_at"]
 
-    # Events: totals by kind + last-14-day daily activity.
+    # Events: totals by event + daily activity. Capped at 30 days / tail so the
+    # ever-growing jsonl never bloats the admin request (1c).
     events_by_kind = Counter()
     daily = Counter()
     per_user_events = Counter()
-    try:
-        with open(_ANALYTICS_PATH, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    e = json.loads(line)
-                except Exception:
-                    continue
-                events_by_kind[e.get("kind")] += 1
-                daily[(e.get("ts") or "")[:10]] += 1
-                per_user_events[e.get("user_id")] += 1
-    except FileNotFoundError:
-        pass
+    for e in analytics.read_events(since_days=30):
+        events_by_kind[e.get("event")] += 1
+        daily[(e.get("ts") or "")[:10]] += 1
+        per_user_events[e.get("user_id")] += 1
 
     users = []
     for u in registry.values():
@@ -717,7 +768,7 @@ async def create_share_link(conversation_id: str, http_request: Request):
     token = storage.create_share(conversation_id)
     if not token:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    _track(http_request, "share", {"conversation_id": conversation_id})
+    _track(http_request, "dashboard_shared", {"conversation_id": conversation_id})
     return {"shared": True, "share_id": token}
 
 
@@ -729,12 +780,15 @@ async def delete_share_link(conversation_id: str, http_request: Request):
 
 
 @app.get("/api/public/{share_id}")
-async def get_public_share(share_id: str):
+async def get_public_share(share_id: str, http_request: Request):
     """Read-only public view for a share token. No identity, no ownership —
     the token IS the capability. Returns only presentation data."""
     conv = storage.get_shared_conversation(share_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="This shared link is unavailable.")
+    # share_viewed — viewers are non-owners (public link, no session); the viral
+    # coefficient. Never leaks who: no owner id in the event.
+    _track(http_request, "share_viewed", {})
     dash = conv.get("dashboard") or {}
     widgets = dash.get("widgets", [])
     # Data minimization: the raw row-level dataset is only rendered by a table or
@@ -933,8 +987,50 @@ async def sample_dashboard(request: SampleDashboardRequest, http_request: Reques
     }
     _stamp_owner(new_conv, http_request)
     storage.save_conversation(new_conv)
-    _track(http_request, "sample_dashboard", {"sample": request.sample or "sales"})
+    _track(http_request, "sample_data_used", {"sample": request.sample or "sales"})
     return {"conversation_id": cid}
+
+
+_demo_cache: dict | None = None
+
+
+@app.get("/api/demo")
+async def get_demo():
+    """Public zero-friction demo (1b): a prebuilt sample dashboard in the exact
+    read-only shape `SharedView` renders — no auth, no key, no writes, no
+    persistence. Built once from a bundled sample and cached in memory. The
+    landing CTA points here so a stranger sees the value before committing."""
+    global _demo_cache
+    if _demo_cache is not None:
+        return _demo_cache
+    from .dashboard import build_dashboard_spec
+
+    fname, label = _SAMPLES["saas"]
+    src = os.path.join(os.path.dirname(__file__), "samples", fname)
+    result = analyse_file(src)
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail="Demo dataset unavailable")
+    data_summary = result["data_summary"]
+    charts = [{"title": c["title"], "type": c["type"], "plotly_json": c["plotly_json"]} for c in result["charts"]]
+    conv = {
+        "id": "demo", "created_at": datetime.utcnow().isoformat(),
+        "title": f"{label} (demo)", "mode": "dashboard",
+        "file": {"id": "demo", "name": fname, "path": src,
+                 "rows": data_summary["row_count"], "columns": data_summary["column_count"]},
+        "pipeline": {"data_summary": data_summary, "charts": charts},
+        "dashboard": build_dashboard_spec(data_summary, charts, title=f"{label} (demo)",
+                                          df=result.get("dataframe"), template="overview"),
+    }
+    dash = conv["dashboard"]
+    widgets = dash.get("widgets", [])
+    shows_rows = any(w.get("kind") in ("table", "comparison") for w in widgets)
+    _demo_cache = {
+        "shared": True, "mode": "dashboard", "title": conv["title"],
+        "created_at": conv["created_at"], "is_demo": True,
+        "dashboard": {"title": dash.get("title"), "widgets": widgets, "last_synced": None},
+        "dataset": _dataset_payload(conv) if shows_rows else None,
+    }
+    return _demo_cache
 
 
 class CreateDashboardRequest(BaseModel):
@@ -1008,8 +1104,13 @@ async def create_dashboard(request: CreateDashboardRequest, http_request: Reques
         "current_stage": "done",
     }
     _stamp_owner(new_conv, http_request)
+    # Activation event: check BEFORE saving (after save this one exists).
+    _owner = user_from_request(http_request)
+    first = _is_first_dashboard(_owner["id"] if _owner else None)
     storage.save_conversation(new_conv)
     _track(http_request, "dashboard_created", {"conversation_id": conversation_id, "template": request.template})
+    if first:
+        _track(http_request, "first_dashboard_created", {"conversation_id": conversation_id})
     return {"conversation_id": conversation_id}
 
 
@@ -1056,7 +1157,6 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
         reply = "Done." if not notes else "; ".join(notes)
     elif request.message and request.message.strip():
         msg = request.message.strip()
-        _track(http_request, "assistant_edit", {"conversation_id": conversation_id})
         # Route by intent: questions are answered from a deterministic data query,
         # edits emit ops, 'both' does both. This is the fix for the "asked a
         # question, got nothing" bug — the editor prompt only knew how to edit.
@@ -1069,9 +1169,16 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
             pin_op = q.get("pin_op")
         if intent in ("edit", "both"):
             parts.append(await run_editor_turn(msg, dashboard, data_summary, df))
+        answered = any(p for p in parts if p)
         reply = "\n\n".join(p for p in parts if p) or (
             "I couldn't find an answer or an edit to make — try naming a column, or ask me to add a chart."
         )
+        # Privacy: log intent + length, NOT the text — except when the answer was
+        # empty, where the text is exactly the signal needed to fix the assistant.
+        _track(http_request, "assistant_message", {
+            "intent": intent, "len": len(msg),
+            **({"empty": True, "text": msg[:200]} if not answered else {}),
+        })
     else:
         raise HTTPException(status_code=400, detail="Provide a message or ops")
 
@@ -1213,7 +1320,7 @@ def connect_source(request: ConnectSourceRequest, http_request: Request):
     summary = result["data_summary"]
 
     _save_source(file_id, cfg)
-    _track(http_request, "connector_import", {"type": request.type})
+    _track(http_request, "connector_used", {"kind": "sql" if request.type == "database" else "rest"})
 
     return {
         "file_id": file_id,
@@ -1291,7 +1398,7 @@ async def sync_dashboard_endpoint(conversation_id: str, http_request: Request):
     from .alerts import evaluate_alerts
     changes = evaluate_alerts(dashboard) + changes
     storage.save_conversation(conv)
-    _track(http_request, "sync", {"conversation_id": conversation_id, "changes": len(changes)})
+    _track(http_request, "sync_run", {"conversation_id": conversation_id, "changes": len(changes), "trigger": "manual"})
     return {"dashboard": dashboard, "changes": changes, "synced_at": dashboard.get("last_synced")}
 
 

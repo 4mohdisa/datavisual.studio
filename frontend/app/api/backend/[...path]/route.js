@@ -35,6 +35,11 @@ async function handle(req, ctx) {
   const contentType = req.headers.get('content-type');
   if (contentType) headers.set('content-type', contentType);
   if (process.env.PROXY_SHARED_SECRET) headers.set('x-proxy-secret', process.env.PROXY_SHARED_SECRET);
+  // Stitch server-side analytics to the same first-party visitor (1c): forward
+  // the anon_id cookie as a header the backend's _track reads. Not identity —
+  // purely for attribution, so it's safe to trust from the client.
+  const anonId = req.cookies.get('dv_anon_id')?.value;
+  if (anonId) headers.set('x-anon-id', anonId);
 
   // Admin is gated by ADMIN_PASSWORD on the backend, not by a Clerk session —
   // pass the password header through and skip the sign-in requirement.

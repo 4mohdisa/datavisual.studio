@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import Reveal from './Reveal';
 import HeroReplay from './HeroReplay';
+import Track from '../Track';
 import { LiveMonitorDemo, BuildDemo, ChatEditDemo, CouncilDemo } from './FeatureDemos';
 
 const SECTION = 'max-w-[1120px] mx-auto px-6';
@@ -83,6 +84,7 @@ const faqJsonLd = {
 export default function Landing() {
   return (
     <div className="h-screen overflow-y-auto bg-[var(--background)] text-[var(--text)]">
+      <Track event="landing_view" />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }} />
 
       {/* Nav */}
@@ -127,10 +129,10 @@ export default function Landing() {
             </p>
             <div className="flex flex-wrap items-center gap-3 mt-8">
               <Link
-                href="/studio?try=sample"
+                href="/demo"
                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-md bg-[var(--new-chat)] text-[var(--background)] text-sm font-medium hover:bg-[var(--new-chat-hover)] transition"
               >
-                <LayoutDashboard size={16} strokeWidth={1.5} /> Try it with sample data
+                <LayoutDashboard size={16} strokeWidth={1.5} /> See a live dashboard
               </Link>
               <Link
                 href="/studio"
@@ -139,7 +141,7 @@ export default function Landing() {
                 Open the studio
               </Link>
             </div>
-            <div className="text-[12px] text-[var(--faint)] mt-2.5">No sign-up friction, no AI key — sample dashboards are instant and free.</div>
+            <div className="text-[12px] text-[var(--faint)] mt-2.5">The demo is a real dashboard — no sign-up, no AI key. Opens instantly.</div>
             <div className="flex flex-wrap gap-x-6 gap-y-2 mt-8 text-[12px] text-[var(--faint)]">
               <span>Live data + web research</span><span>·</span>
               <span>What-changed on every update</span><span>·</span>

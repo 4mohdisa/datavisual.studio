@@ -1,6 +1,7 @@
 import './globals.css';
 import { ClerkProvider } from '@clerk/nextjs';
 import ErrorBoundary from '../components/ErrorBoundary';
+import Identify from '../components/Identify';
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://datavisual.studio';
 const DESCRIPTION =
@@ -69,6 +70,8 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <body>
         <ErrorBoundary>{children}</ErrorBoundary>
+        {/* anon→user analytics stitch — needs a ClerkProvider ancestor. */}
+        {authEnabled && <Identify />}
       </body>
     </html>
   );

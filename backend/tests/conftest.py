@@ -49,6 +49,7 @@ def isolated_data(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "UPLOADS_DIR", str(tmp_path / "uploads"))
     monkeypatch.setattr(main, "EXPORTS_DIR", str(tmp_path / "exports"))
     monkeypatch.setattr(main, "_ANALYTICS_PATH", tmp_path / "analytics.jsonl")
+    monkeypatch.setattr("backend.analytics.ANALYTICS_PATH", tmp_path / "analytics.jsonl")
     monkeypatch.setattr(main, "_SOURCES_PATH", tmp_path / "sources.json")
     # No global AI key, no proxy secret, no admin password by default.
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

@@ -151,6 +151,43 @@ Newest phase last.
 - `/api/sample-dashboard` is deliberately unauthenticated (zero-key onboarding) but was already in
   `_RATE_LIMITED`; added a test proving it 429s under burst so it can't be a free botnet/compute target.
 
+## Night 2 — Phase 1 (ship-gate essentials)
+
+### 1a — hero honesty: already correct
+- The plan assumed the hero over-promised ("watches while you sleep"). It did NOT — Night 1's copy
+  already reads "One click keeps both your numbers and the live web in sync" and the feature copy is all
+  user-triggered ("Hit Update", "one Update tells you what moved"). No autonomy claim anywhere in
+  user-facing text. Only change: repointed the primary CTA to /demo (see 1b).
+
+### 1b — public /demo (`GET /api/demo` + `app/demo/page.js`)
+- A prebuilt sample (SaaS) dashboard in the EXACT read-only share shape, rendered through the existing
+  `SharedView` — no auth, no key, no writes, no persistence (built once, cached in `_demo_cache`). The
+  `/demo` page fetches the backend server-side (like `/share`), so no Clerk session is needed and no
+  proxy exemption was added. Hero primary CTA now → /demo. Owner-only fields deny-scanned in a test.
+
+### 1c — event instrumentation (ships in the gate — irreversible) ✅
+- **Transport:** `lib/analytics.js` (anon_id cookie 1yr + session_id + first-touch UTM/referrer) →
+  dedicated Next `app/api/events/route.js` → backend `POST /api/events`. A DEDICATED route, NOT a proxy
+  exemption — the plan is explicit that exempting prefixes on the `[...path]` proxy is the pattern that
+  produced past criticals. Server-side events stitch via the proxy forwarding the `dv_anon_id` cookie as
+  `x-anon-id` (one edit, no api.js churn).
+- **The anon→user stitch** (the whole point): `components/Identify.jsx` fires `identify` + `signup_completed`
+  once per user, linking anon_id → user_id, so a landing visit can be attributed to the signup it became.
+- **Events wired:** landing_view, demo_view, demo_interact, signup_completed, identify, error_shown
+  (client) + dashboard_created, first_dashboard_created (activation), sample_data_used, connector_used
+  (sql|rest), assistant_message (intent+length), sync_run, share_viewed (viral coeff), research_run
+  (server). Verified live: `/api/events` wrote the rich shape with anon_id; `/api/demo` returns 12 widgets.
+- **Privacy:** props are cleaned to flat scalars (nested/oversized dropped) so a dataset cell can't leak;
+  assistant_message logs intent+length, and the message TEXT only when the answer was empty (the exact
+  signal to fix the assistant); admin read capped to 30 days. Dedicated per-IP events limiter so anon
+  users don't share one `u:anon` bucket.
+
+### 1d — mobile 390px
+- Verified /demo (and therefore /share, same `SharedView`) at 390px: no horizontal overflow, metric
+  cards 2×2, charts stack full-width and Plotly resizes correctly. Fixed the one issue — the top-bar CTA
+  wrapped to 3 lines; badge is now `hidden sm:inline-flex` and the CTA `shrink-0 whitespace-nowrap`.
+  Editor stays desktop-first by design (recorded in UI_AUDIT).
+
 ### 0h — LLM paths PROVEN live (the thing Night 1 could not) ✅
 - **Environment blocker resolved:** the OpenRouter account has credits again (usage ~$4.25, prepaid
   balance). Night 1's "assistant round-trip unverified" was purely an out-of-credits/slow-model

@@ -133,3 +133,42 @@ def test_add_chart_without_dataframe_is_reported():
     dash = {"widgets": []}
     notes = _run(dash, [{"op": "add_chart", "chart_type": "bar", "x": "region", "y": "revenue"}], df=None)
     assert notes and dash["widgets"] == []
+
+
+# --- Phase 2b (slice): malformed model output must DEGRADE, never 500 ---------
+# The part that actually breaks is applying model output. apply_ops wraps each
+# op, so a bad op becomes a note, not a crash. These lock that in.
+
+@pytest.mark.parametrize("bad_op", [
+    {"op": "totally_unknown_kind"},                                  # unknown op kind
+    {"op": "add_chart", "chart_type": "bar", "x": "no_such_col", "y": "revenue"},  # missing column
+    {"op": "add_chart", "chart_type": "not_a_chart", "x": "region", "y": "revenue"},  # bad type
+    {"op": "add_metric", "column": "no_such_col", "agg": "sum"},     # missing column
+    {"op": "add_metric", "column": "revenue", "agg": "bogus_agg"},   # bad aggregation
+    {"op": "update_chart", "id": "ghost"},                           # nonexistent target
+    {"op": "remove_widget"},                                         # missing id
+    {"op": "add_chart"},                                             # missing required fields
+    {},                                                              # empty op
+])
+def test_malformed_single_op_degrades_gracefully(sample_df, bad_op):
+    dash = {"widgets": []}
+    notes = _run(dash, [bad_op], df=sample_df)  # must not raise
+    assert isinstance(notes, list)  # a note (or silent no-op), never a crash
+
+
+def test_empty_and_huge_op_lists(sample_df):
+    dash = {"widgets": []}
+    assert _run(dash, [], df=sample_df) == []           # [] → no-op
+    # A 300-op response must not blow up (loops, not recursion).
+    many = [{"op": "add_metric", "column": "revenue", "agg": "sum"}] * 300
+    notes = _run(dash, many, df=sample_df)
+    assert isinstance(notes, list) and len(dash["widgets"]) >= 1
+
+
+@pytest.mark.parametrize("junk", [[None], ["not-an-op"], [123], [None, {"op": "add_metric", "column": "revenue", "agg": "sum"}]])
+def test_non_dict_ops_are_survivable(sample_df, junk):
+    # A model returning null/strings/numbers inside the ops array must degrade to
+    # a note, never crash — and valid ops alongside the junk still apply.
+    dash = {"widgets": []}
+    notes = _run(dash, junk, df=sample_df)  # must not raise
+    assert isinstance(notes, list)

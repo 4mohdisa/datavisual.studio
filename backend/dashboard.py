@@ -581,6 +581,11 @@ async def apply_ops(
         return next((w for w in widgets if w.get("id") == wid), None)
 
     for op in ops:
+        # Malformed model output: an op that isn't a dict (null, a bare string,
+        # a number) must degrade to a note, never crash the editor (Phase 2b).
+        if not isinstance(op, dict):
+            notes.append(f"Ignored a malformed instruction ({type(op).__name__}).")
+            continue
         kind = op.get("op")
         try:
             if kind == "add_chart":

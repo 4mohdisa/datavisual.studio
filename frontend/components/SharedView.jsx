@@ -28,7 +28,10 @@ export default function SharedView({ data }) {
   const widgets = data.dashboard?.widgets || [];
 
   return (
-    <div className="min-h-screen bg-[var(--background)] text-[var(--text)] overflow-y-auto">
+    // h-screen (not min-h-screen): body is height:100vh; overflow:hidden, so the
+    // scroll container needs a DEFINITE height for overflow-y-auto to activate.
+    // With min-h-screen the content grew past the fold and was clipped, unreachable.
+    <div className="h-screen bg-[var(--background)] text-[var(--text)] overflow-y-auto">
       {/* Top bar — brand + read-only badge + build-your-own CTA */}
       <div className="sticky top-0 z-40 border-b border-[var(--border)] bg-[oklch(0.12_0_0/0.85)] backdrop-blur">
         <div className="max-w-[1400px] mx-auto px-6 h-[56px] flex items-center gap-3">

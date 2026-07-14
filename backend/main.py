@@ -1152,6 +1152,7 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
     dashboard = conv["dashboard"]
 
     pin_op = None
+    working = None
     if request.ops:
         notes = await apply_ops(dashboard, request.ops, df, data_summary)
         reply = "Done." if not notes else "; ".join(notes)
@@ -1167,6 +1168,18 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
             if q.get("reply"):
                 parts.append(q["reply"])
             pin_op = q.get("pin_op")
+            # Show the working (Phase 0e): the executed spec + a slice of the
+            # result table the answer was phrased from, so the user can see it.
+            _res = q.get("result") or {}
+            working = {
+                "spec": q.get("spec"),
+                "columns": _res.get("columns"),
+                "rows": (_res.get("rows") or [])[:10],
+                "row_count": _res.get("row_count"),
+                "warning": q.get("warning"),
+                "corrected": _res.get("corrected"),
+                "corrected_label": _res.get("corrected_label"),
+            }
         if intent in ("edit", "both"):
             parts.append(await run_editor_turn(msg, dashboard, data_summary, df))
         answered = any(p for p in parts if p)
@@ -1189,7 +1202,7 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
         fresh["dashboard"] = dashboard
         fresh["title"] = dashboard.get("title", fresh.get("title"))
     storage.update_conversation(conversation_id, _apply)
-    return {"reply": reply, "dashboard": dashboard, "pin_op": pin_op}
+    return {"reply": reply, "dashboard": dashboard, "pin_op": pin_op, "working": working}
 
 
 class ConnectSourceRequest(BaseModel):

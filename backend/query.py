@@ -39,8 +39,15 @@ def _clean(v: Any) -> Any:
     return v
 
 
-def run_query_spec(df: Optional[pd.DataFrame], spec: dict) -> dict:
-    """Execute a query spec. Returns {columns, rows, row_count} or {error}."""
+def run_query_spec(df: Optional[pd.DataFrame], spec: dict,
+                   *, measures: Optional[dict] = None, time_col: Optional[str] = None) -> dict:
+    """Execute a query spec. Returns {columns, rows, row_count} or {error}.
+
+    `measures` (col → identifier|category|timestamp|flow|stock|ratio) and
+    `time_col` enable the stock-sum guard (Phase 0b/0c): summing a *stock* (MRR,
+    headcount, balance…) across a time dimension double-counts, so the result is
+    annotated with a `warning` and the correct `corrected` value (the latest
+    period), rather than silently handing back a nonsense total."""
     if df is None or getattr(df, "empty", True):
         return {"error": "No dataset is attached, so there's nothing to compute from."}
     if not isinstance(spec, dict):
@@ -125,7 +132,58 @@ def run_query_spec(df: Optional[pd.DataFrame], spec: dict) -> dict:
     res = res.head(n).replace({np.nan: None})
 
     rows = [{k: _clean(v) for k, v in r.items()} for r in res.to_dict(orient="records")]
-    return {"columns": [str(c) for c in res.columns], "rows": rows, "row_count": len(rows)}
+    result = {"columns": [str(c) for c in res.columns], "rows": rows, "row_count": len(rows)}
+
+    warning, corrected, corrected_label = _stock_sum_guard(work, agg, group_by, measures, time_col)
+    if warning:
+        result["warning"] = warning
+        if corrected is not None:
+            result["corrected"] = corrected
+            result["corrected_label"] = corrected_label
+    return result
+
+
+def _stock_sum_guard(work, agg, group_by, measures, time_col):
+    """Detect SUM of a stock across a time dimension. Returns
+    (warning, corrected_value, corrected_label) or (None, None, None)."""
+    if not measures or not isinstance(agg, dict):
+        return None, None, None
+    # Auto-detect the time column if the caller didn't name one.
+    if not time_col:
+        time_col = next((c for c in work.columns
+                         if pd.api.types.is_datetime64_any_dtype(work[c])), None)
+    if not time_col or time_col not in work.columns:
+        return None, None, None
+    try:
+        periods = work[time_col].dropna().nunique()
+    except Exception:
+        return None, None, None
+    if periods <= 1 or time_col in (group_by or []):
+        return None, None, None  # single period, or time kept as a group → fine
+
+    for col, func in agg.items():
+        if func != "sum" or measures.get(col) != "stock":
+            continue
+        try:
+            latest = work[work[time_col] == work[time_col].max()]
+            non_time_groups = [g for g in (group_by or []) if g != time_col]
+            if non_time_groups:
+                corrected = None  # per-group corrected is ambiguous; just warn
+            else:
+                corrected = float(pd.to_numeric(latest[col], errors="coerce").sum())
+            raw = float(pd.to_numeric(work[col], errors="coerce").sum())
+            label = str(pd.Timestamp(work[time_col].max()).date())
+            msg = (f"‘{col}’ is a stock (a level, not a per-period flow), so summing it "
+                   f"across {periods} periods counts the same value repeatedly. ")
+            if corrected is not None:
+                msg += (f"The latest-period total ({label}) is {corrected:,.0f}; "
+                        f"the raw sum is {raw:,.0f}.")
+            else:
+                msg += f"The raw sum across all periods is {raw:,.0f} and is not meaningful."
+            return msg, corrected, label
+        except Exception:
+            return None, None, None
+    return None, None, None
 
 
 def spec_to_widget_op(spec: dict) -> Optional[dict]:

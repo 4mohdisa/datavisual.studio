@@ -103,6 +103,50 @@ def _col_type(series: pd.Series) -> str:
     return "categorical"
 
 
+# Measure semantics (Night 3, Phase 0b). Stocks/flows/ratios are NOT the same
+# thing under aggregation: a flow (revenue-in-period, units, count) is additive
+# across time; a stock (MRR, ARR, headcount, balance, inventory, price) is NOT —
+# summing it across periods double-counts; a ratio (%, rate, average) is not
+# additive at all. Name heuristics; substring match, lowercased.
+_STOCK_NAMES = (
+    "mrr", "arr", "balance", "inventory", "headcount", "customer", "subscriber",
+    "active", "seat", "price", "stock", "level", "aum", "cash", "backlog",
+    "population", "membership", "member",
+)
+_RATIO_NAMES = (
+    "rate", "ratio", "pct", "percent", "margin", "conversion", "avg", "average",
+    "mean", "per_", "share", "cpc", "cpm", "ctr", "churn", "yield", "utilization",
+)
+_FLOW_NAMES = (
+    "revenue", "sales", "unit", "count", "amount", "spend", "cost", "qty",
+    "quantity", "order", "click", "impression", "session", "signup", "new_",
+    "volume", "gmv", "booking", "transaction", "profit", "income", "expense",
+)
+_ID_NAMES = ("id", "uuid", "guid", "code", "sku")
+
+
+def classify_measure(name: str, series: pd.Series) -> str:
+    """Classify a column's role for aggregation safety:
+    identifier | category | timestamp | flow | stock | ratio.
+    Name-heuristic first (a stable, explainable signal); the caller may refine
+    stocks from data shape (a measure roughly stable per entity across periods)."""
+    n = str(name).strip().lower()
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "timestamp"
+    if not pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
+        return "category"
+    # numeric — decide identifier / ratio / stock / flow (order matters).
+    if any(re.search(rf"(^|[_\s]){k}([_\s]|$)", n) for k in _ID_NAMES):
+        return "identifier"
+    if any(k in n for k in _RATIO_NAMES):
+        return "ratio"
+    if any(k in n for k in _STOCK_NAMES):
+        return "stock"
+    if any(k in n for k in _FLOW_NAMES):
+        return "flow"
+    return "flow"  # additive is the conventional default for an unlabelled measure
+
+
 def _try_parse_datetime(df: pd.DataFrame) -> pd.DataFrame:
     threshold = len(df) * 0.8
     for col in df.columns:
@@ -532,7 +576,12 @@ def analyse_df(df: pd.DataFrame) -> dict[str, Any]:
     for col in df.columns:
         col_type = _col_type(df[col])
         null_count = int(df[col].isna().sum())
-        columns_info.append({"name": col, "type": col_type, "null_count": null_count})
+        # measure role (Phase 0b) travels with the schema so the query engine and
+        # the assistant can refuse to sum a stock across time.
+        columns_info.append({
+            "name": col, "type": col_type, "null_count": null_count,
+            "measure": classify_measure(col, df[col]),
+        })
 
         if null_count > 0:
             pct = round(null_count / len(df) * 100, 1)

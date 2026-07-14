@@ -24,7 +24,58 @@ const SUGGESTIONS = [
   'Research this topic online and pin the findings',
 ];
 
-function AssistantPanel({ history, busy, onSend, onClose, pinOp, onPin }) {
+// Honest status copy driven by what the assistant is actually doing (Phase 0f):
+// a spinner that describes the wrong action is worse than no spinner.
+function guessBusyLabel(message) {
+  const m = (message || '').toLowerCase().trim();
+  if (/\b(research|search the web|online|latest news)\b/.test(m)) return 'Searching the web…';
+  const isQuestion = /\?$/.test(m) ||
+    /^(what|which|how|when|who|where|why|is |are |does |do |show me|tell me|average|total|sum|count|highest|lowest|compare)\b/.test(m);
+  return isQuestion ? 'Reading the data…' : 'Updating the dashboard…';
+}
+
+// Show the working (Phase 0e): the executed query + the result the answer was
+// phrased from, collapsed by default. Transparency is the feature — if the user
+// can see SUM(mrr) over 18 rows they catch the error instantly.
+function Working({ working }) {
+  if (!working || (!working.columns && !working.warning)) return null;
+  const { spec, columns, rows, warning } = working;
+  const summarize = (s) => {
+    if (!s) return 'selected rows';
+    const parts = [];
+    if (s.filter?.length) parts.push('filter ' + s.filter.map((f) => `${f.column} ${f.op} ${f.value}`).join(', '));
+    if (s.group_by?.length) parts.push('group by ' + s.group_by.join(', '));
+    if (s.agg) parts.push(Object.entries(s.agg).map(([k, v]) => `${v}(${k})`).join(', '));
+    return parts.join(' · ') || 'selected rows';
+  };
+  return (
+    <details className="self-start w-full text-[12px] text-[var(--muted)] rounded-lg border border-[var(--border)] bg-[var(--raised)]">
+      <summary className="cursor-pointer select-none px-3 py-2 hover:text-[var(--text)]">Show the working</summary>
+      <div className="flex flex-col gap-2 px-3 pb-3">
+        {warning && (
+          <div className="rounded-md border border-[var(--warning)] px-2 py-1.5 text-[var(--warning)] leading-snug">{warning}</div>
+        )}
+        <div><span className="text-[var(--faint)]">Query:</span> {summarize(spec)}</div>
+        {columns?.length > 0 && rows?.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="border-collapse text-[11.5px]">
+              <thead>
+                <tr>{columns.map((c) => <th key={c} className="border-b border-[var(--border)] px-2 py-1 text-left font-medium">{c}</th>)}</tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 8).map((r, i) => (
+                  <tr key={i}>{columns.map((c) => <td key={c} className="border-b border-[var(--border)] px-2 py-1">{String(r[c])}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pinOp, onPin }) {
   const [input, setInput] = useState('');
   const scrollRef = useRef(null);
 
@@ -70,9 +121,10 @@ function AssistantPanel({ history, busy, onSend, onClose, pinOp, onPin }) {
             {h.content}
           </div>
         ))}
+        {!busy && <Working working={working} />}
         {busy && (
           <div className="self-start flex items-center gap-2 text-[13px] text-[var(--muted)]">
-            <Loader2 size={14} className="animate-spin" /> Updating dashboard…
+            <Loader2 size={14} className="animate-spin" /> {busyLabel || 'Working…'}
           </div>
         )}
       </div>
@@ -172,6 +224,8 @@ export default function Dashboard({ id }) {
 
   const handleSend = async (message) => {
     setBusy(true);
+    setPending(message);
+    setWorking(null);
     // Optimistic: show the user's message immediately; the server response
     // carries the authoritative history (both turns) and replaces it.
     setConv((prev) => prev ? {
@@ -181,6 +235,7 @@ export default function Dashboard({ id }) {
     try {
       const result = await api.dashboardChat(id, { message });
       applyResult(result);
+      setWorking(result.working || null);
       // An answered question can carry a spec to pin as a widget (the product moment).
       setPinOp(result.pin_op || null);
     } catch (e) {
@@ -198,6 +253,8 @@ export default function Dashboard({ id }) {
 
   // A pinnable spec returned by the last answered question (null = nothing to pin).
   const [pinOp, setPinOp] = useState(null);
+  const [pending, setPending] = useState('');   // last-sent message (drives honest status)
+  const [working, setWorking] = useState(null);  // show-the-working for the last answer
   const handlePin = async () => {
     if (!pinOp) return;
     const op = pinOp;
@@ -550,6 +607,8 @@ export default function Dashboard({ id }) {
         <AssistantPanel
           history={dashboard.history || []}
           busy={busy}
+          busyLabel={busy ? guessBusyLabel(pending) : ''}
+          working={working}
           onSend={handleSend}
           onClose={() => setPanelOpen(false)}
           pinOp={pinOp}

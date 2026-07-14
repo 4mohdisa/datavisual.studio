@@ -827,7 +827,9 @@ def _schema_context(data_summary: Optional[dict], df: Optional[pd.DataFrame]) ->
             if df is not None and name in df.columns:
                 vals = [str(v) for v in df[name].dropna().unique()[:3]]
                 samples = f" e.g. {', '.join(vals)}" if vals else ""
-            lines.append(f"- {name} ({c.get('type')}, nulls={c.get('null_count', 0)}){samples}")
+            measure = c.get("measure")
+            mtag = f", {measure}" if measure and measure not in ("category", "timestamp") else ""
+            lines.append(f"- {name} ({c.get('type')}{mtag}, nulls={c.get('null_count', 0)}){samples}")
         rows = (data_summary or {}).get("row_count")
     elif df is not None:
         for name in list(df.columns)[:40]:
@@ -862,6 +864,86 @@ def _fallback_answer(result: dict) -> str:
     return "Result:\n" + "\n".join(lines) + more
 
 
+def _safe_answer(result: dict, reason: str) -> str:
+    """Fail-closed answer when phrasing can't be grounded (Phase 0a): show the
+    computed result and say plainly it couldn't be phrased safely."""
+    corrected = result.get("corrected")
+    if isinstance(corrected, (int, float)):
+        label = result.get("corrected_label") or "the latest period"
+        base = f"The value for {label} is {corrected:,.0f}."
+    else:
+        base = _fallback_answer(result)
+    return f"I can't phrase that safely from this data ({reason}). Here is exactly what was computed:\n\n{base}"
+
+
+def _measures_and_time(data_summary, df):
+    cols = (data_summary or {}).get("columns") or []
+    measures = {c.get("name"): c.get("measure") for c in cols if c.get("measure")}
+    time_col = next((c.get("name") for c in cols if c.get("type") == "datetime"), None)
+    if not time_col and df is not None:
+        time_col = next((c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])), None)
+    return measures, time_col
+
+
+def _infer_period(df, time_col):
+    """The granularity the data carries (day|week|month|quarter|year), so the
+    assistant knows when a question asks for a period the data doesn't have."""
+    if df is None or not time_col or time_col not in getattr(df, "columns", []):
+        return None
+    try:
+        ts = pd.to_datetime(df[time_col], errors="coerce").dropna().drop_duplicates().sort_values()
+        if len(ts) < 2:
+            return None
+        days = ts.diff().dropna().dt.days.median()
+        return ("day" if days <= 2 else "week" if days <= 10 else "month"
+                if days <= 45 else "quarter" if days <= 135 else "year")
+    except Exception:
+        return None
+
+
+_TOTAL_WORDS = ("total", "overall", "current", "altogether", "combined", "in total", "sum of", "how much")
+
+
+def _stock_total_override(message, spec, df, measures, time_col):
+    """Phase 0c — the deterministic fix for the worst bug. If the user asks for
+    the 'total'/'current' of a STOCK measure over a time series, compute the
+    latest-period total ourselves (regardless of what aggregation the model
+    picked — sum, max, whatever), so the answer can never be a summed-across-time
+    or arbitrary value. Returns a result dict or None."""
+    if df is None or not time_col or time_col not in getattr(df, "columns", []):
+        return None
+    m = (message or "").lower()
+    if not any(w in m for w in _TOTAL_WORDS):
+        return None
+    stock_cols = [c for c, meas in (measures or {}).items() if meas == "stock" and c in df.columns]
+    if not stock_cols:
+        return None
+    agg = spec.get("agg") if isinstance(spec, dict) else None
+    target = next((c for c in (agg or {}) if c in stock_cols), None) \
+        or next((c for c in stock_cols if c.lower() in m), None) \
+        or (stock_cols[0] if len(stock_cols) == 1 else None)
+    if not target:
+        return None
+    try:
+        periods = df[time_col].dropna().nunique()
+        if periods <= 1:
+            return None
+        latest = df[df[time_col] == df[time_col].max()]
+        total = float(pd.to_numeric(latest[target], errors="coerce").sum())
+        raw = float(pd.to_numeric(df[target], errors="coerce").sum())
+        label = str(pd.Timestamp(df[time_col].max()).date())
+        col = f"{target} total ({label})"
+        return {
+            "columns": [col], "rows": [{col: round(total, 2)}], "row_count": 1,
+            "corrected": total, "corrected_label": label, "raw_sum": round(raw, 2),
+            "warning": (f"‘{target}’ is a stock (a level, not a per-period flow). Its total is the "
+                        f"latest period ({label}) = {total:,.0f} — NOT the sum across all {periods} "
+                        f"periods ({raw:,.0f}), which double-counts recurring value."),
+        }
+    except Exception:
+        return None
+
+
 async def run_query_turn(
     message: str,
     dashboard: dict,
@@ -874,13 +956,17 @@ async def run_query_turn(
     from .query import run_query_spec, spec_to_widget_op
 
     schema = _schema_context(data_summary, df)
+    from .answer_guard import check_answer
+
     spec_prompt = (
         "Translate the question into a JSON query spec and output ONLY JSON:\n"
         '{"filter":[{"column","op","value"}],"group_by":[..],'
         '"agg":{"<col>":"sum|mean|min|max|count|median|nunique"},'
         '"select":[..],"sort":{"column","dir":"asc|desc"},"limit":N}\n'
         "op is one of == != > >= < <= in contains. Use EXACT column names. Omit keys you don't need. "
-        "For a grouped question use group_by + agg; the result columns are named <col>_<func>.\n\n"
+        "For a grouped question use group_by + agg; the result columns are named <col>_<func>.\n"
+        "A column tagged 'stock' (MRR, headcount, balance, price…) is a level, NOT a per-period flow: "
+        "NEVER sum it across time. For the 'total' of a stock, take the latest period.\n\n"
         f"{schema}\n\nQuestion: {message}\nJSON:"
     )
     resp = await query_model(get_fast_model(), [{"role": "user", "content": spec_prompt}], max_tokens=400)
@@ -890,24 +976,55 @@ async def run_query_turn(
     if spec is None:
         return {"reply": "I couldn't turn that into a data query. Try naming the column or metric you mean."}
 
-    result = run_query_spec(df, spec)
+    measures, time_col = _measures_and_time(data_summary, df)
+    data_period = _infer_period(df, time_col)
+    result = run_query_spec(df, spec, measures=measures, time_col=time_col)
     if "error" in result:
-        return {"reply": result["error"]}
+        return {"reply": result["error"], "spec": spec}
+    # Deterministic stock-total: "total/current MRR" is ALWAYS the latest period,
+    # never the model's aggregation choice (Phase 0c — fixes the $480,506 bug).
+    override = _stock_total_override(message, spec, df, measures, time_col)
+    if override:
+        result = override
 
-    ans_prompt = (
-        "Answer the question in 1-3 sentences using ONLY the computed result below. "
-        "Name the columns and values you used; never invent numbers.\n\n"
-        f"Question: {message}\nColumns: {result['columns']}\n"
-        f"Rows: {json.dumps(result['rows'][:20])}\nAnswer:"
+    warning, corrected = result.get("warning"), result.get("corrected")
+    guard_note = ""
+    if warning:
+        guard_note = ("\nIMPORTANT: " + warning +
+                      " Lead with the corrected value and its period; briefly note the raw sum is misleading.")
+    if data_period:
+        guard_note += (f"\nThe data is {data_period}ly. If the question asks for a different time period "
+                       "(weekly, daily, yearly), either show the conversion arithmetic explicitly or say it "
+                       "can't be derived from this data. Do NOT relabel a number under a different period.")
+    base_prompt = (
+        "Answer in 1-2 short sentences using ONLY the computed result below. Lead with the number and "
+        "its unit/period. Never invent numbers. Do not cite internal column names like '<col>_sum' — name "
+        "the metric in plain words." + guard_note +
+        f"\n\nQuestion: {message}\nColumns: {result['columns']}\n"
+        f"Rows: {json.dumps(result['rows'][:20])}\n"
+        + (f"Corrected (use this) : {corrected}\n" if corrected is not None else "")
+        + "Answer:"
     )
-    ans = await query_model(get_fast_model(), [{"role": "user", "content": ans_prompt}], max_tokens=300)
+    ans = await query_model(get_fast_model(), [{"role": "user", "content": base_prompt}], max_tokens=300)
     reply = ((ans or {}).get("content") or "").strip() or _fallback_answer(result)
+
+    # Numeric grounding — fail closed (Phase 0a). Re-ask once naming the violation,
+    # then fall back to showing the computed result rather than a wrong sentence.
+    ok, reason = check_answer(message, reply, result, data_period=data_period)
+    if not ok:
+        retry = await query_model(get_fast_model(), [{"role": "user", "content": base_prompt +
+                 f"\n\nYour previous answer was rejected: {reason}. Use ONLY numbers shown above, or show the "
+                 "arithmetic for any derived number, or say it can't be answered from this data."}], max_tokens=300)
+        reply2 = ((retry or {}).get("content") or "").strip()
+        ok2, _ = check_answer(message, reply2, result, data_period=data_period) if reply2 else (False, "")
+        reply = reply2 if ok2 else _safe_answer(result, reason)
 
     history = dashboard.setdefault("history", [])
     history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": reply})
     del history[:-30]
-    return {"reply": reply, "result": result, "pin_op": spec_to_widget_op(spec)}
+    return {"reply": reply, "result": result, "spec": spec,
+            "warning": warning, "pin_op": spec_to_widget_op(spec)}
 
 
 # ---------------------------------------------------------------------------

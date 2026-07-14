@@ -966,7 +966,9 @@ async def run_query_turn(
         "op is one of == != > >= < <= in contains. Use EXACT column names. Omit keys you don't need. "
         "For a grouped question use group_by + agg; the result columns are named <col>_<func>.\n"
         "A column tagged 'stock' (MRR, headcount, balance, price…) is a level, NOT a per-period flow: "
-        "NEVER sum it across time. For the 'total' of a stock, take the latest period.\n\n"
+        "NEVER sum it across time. For the 'total' of a stock, take the latest period.\n"
+        "For 'how many' or 'total X in <period>', filter to that period and SUM across the OTHER "
+        "dimensions with NO group_by (unless the question explicitly asks per-category).\n\n"
         f"{schema}\n\nQuestion: {message}\nJSON:"
     )
     resp = await query_model(get_fast_model(), [{"role": "user", "content": spec_prompt}], max_tokens=400)

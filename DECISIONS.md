@@ -232,3 +232,23 @@ regression, coverage floor.
   boot when `FRONTEND_ORIGIN` is set (the deploy marker) but `PROXY_SHARED_SECRET` is not. **Signal
   choice:** `FRONTEND_ORIGIN` because docker-compose already hard-requires the secret (`:?set in .env`),
   so only a bare/direct run can reach the unsafe state, and that path sets `FRONTEND_ORIGIN`.
+
+## Night 3 — Phase 0 (assistant correctness) + harness
+
+- **The worst bug is fixed and browser-proven.** "Total MRR" now returns 90,596 (latest month,
+  Jun 2026) deterministically via `_stock_total_override` — never 480,506 (the 6× double-count) or an
+  arbitrary max, regardless of what aggregation the LLM picks. "How much weekly" is refused (or converted
+  with shown arithmetic), never relabelled. Column measures (stock/flow/ratio) classified on ingestion.
+  Numeric grounding (`backend/answer_guard`) fails closed: every number in an answer must be in the
+  result or a shown derivation. Show-the-working renders the executed spec + result table + stock warning.
+- **Golden set (0g):** deterministic engine truths locked in `test_golden_questions.py` (7 tests). Live
+  real-model spot-check: total MRR ✓ (90,596), weekly ✓ (refused), highest MRR ✓ (52,761), avg
+  customers/plan ✓, churn ✓ (refused, no column).
+- **Assumption to confirm — ambiguous "how many in <period>":** the live model sometimes under-aggregates
+  ("customers in June 2026" → 483 = one plan, not 731 = all plans). The ENGINE computes 731 correctly
+  (tested); the gap is the model's spec choice. Added a spec-prompt hint to sum across other dimensions;
+  Phase 5 (answer quality) can tighten further. It's a defensible-but-incomplete answer, not a dangerous
+  fabrication — 483 is a real grounded value.
+- **Test harness (Phase 4a):** Playwright binds to `E2E_PORT` (default 3100, never 3000); Vitest + RTL +
+  axe installed (dev-only). The port excuse is dead.
+- **Exports will become light/print-designed** (Phase 1) — a dark PDF wastes ink and reads as broken.

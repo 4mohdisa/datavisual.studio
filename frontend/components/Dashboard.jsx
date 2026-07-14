@@ -9,6 +9,7 @@ import { ArrowLeft, Download, Loader2, X, Sparkles, Send, PanelRightClose, Panel
 import WidgetEditor from './WidgetEditor';
 import ShareModal from './ShareModal';
 import DashboardWidgets, { relativeTime } from './DashboardWidgets';
+import ExportDashboardButton from './ExportDashboardButton';
 import Button from './ui/Button';
 import Modal from './ui/Modal';
 import { api } from '../lib/api';
@@ -448,12 +449,7 @@ export default function Dashboard({ id }) {
               >
                 <Share2 size={14} strokeWidth={1.5} /> {shareId ? 'Shared' : 'Share'}
               </button>
-              <button
-                onClick={() => api.exportReport(id, null, 'dashboard').catch(() => {})}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--border-2)] text-[13px] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--active)] transition"
-              >
-                <Download size={14} strokeWidth={1.5} /> Export
-              </button>
+              <ExportDashboardButton conversationId={id} />
               {!panelOpen && (
                 <button
                   onClick={() => setPanelOpen(true)}

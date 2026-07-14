@@ -67,7 +67,7 @@ def pdf_available() -> bool:
 
 async def export_report(conversation: dict, base_path_no_ext: str, fmt: str | None = None,
                         mode: str | None = None) -> dict:
-    """Produce a downloadable report file from ONE structured dark layout.
+    """Produce a downloadable report file from ONE structured light layout.
 
     `mode="dashboard"` renders the visual dashboard export; otherwise the full
     report. `fmt` is 'pdf', 'html', or None (= pdf when any renderer exists).
@@ -127,22 +127,22 @@ def _build_dashboard_html(conversation: dict) -> str:
 
     parts = [
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
-        f"<title>{_esc(title)}</title><style>{_DARK_EXPORT_CSS}"
+        f"<title>{_esc(title)}</title><style>{_EXPORT_CSS}"
         ".metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0}"
-        ".metric{background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:16px}"
-        ".metric .l{font-size:11px;color:#9bb0cc;text-transform:uppercase;letter-spacing:.04em}"
-        ".metric .v{font-size:24px;font-weight:700;color:#fff;margin-top:6px}"
-        ".metric .s{font-size:11px;color:#8a8a8a;margin-top:2px}"
+        ".metric{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px}"
+        ".metric .l{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.04em}"
+        ".metric .v{font-size:24px;font-weight:700;color:#0f172a;margin-top:6px}"
+        ".metric .s{font-size:11px;color:#94a3b8;margin-top:2px}"
         ".grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px}"
-        ".card{background:#161616;border:1px solid #2a2a2a;border-radius:10px;padding:16px}"
+        ".card{background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;padding:16px}"
         ".card h3{margin:0 0 10px 0}"
         ".card img{max-width:100%;border-radius:6px}"
-        ".insight{background:#141821;border:1px solid #232a3a;border-radius:10px;padding:18px;margin-bottom:14px}"
-        ".insight h3{margin:0 0 10px 0;color:#9db8e8}"
-        ".insight .body{font-size:13px;color:#c7c7c7}"
+        ".insight{background:#f8fafc;border:1px solid #dbeafe;border-radius:10px;padding:18px;margin-bottom:14px}"
+        ".insight h3{margin:0 0 10px 0;color:#1e40af}"
+        ".insight .body{font-size:13px;color:#334155}"
         ".insight .body p{margin:0 0 10px 0}"
         ".insight .body ul,.insight .body ol{padding-left:20px;margin:0 0 10px 0}"
-        ".footer{margin-top:32px;padding-top:14px;border-top:1px solid #262626;color:#777;font-size:12px}"
+        ".footer{margin-top:32px;padding-top:14px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:12px}"
         "@media print{.grid2{grid-template-columns:1fr 1fr}}"
         "</style></head><body>"
         f"<h1>{_esc(title)}</h1>"
@@ -160,15 +160,25 @@ def _build_dashboard_html(conversation: dict) -> str:
     if charts:
         parts.append('<div class="section"><h2>Charts</h2>')
         rendered = []
-        if _kaleido_available():
-            for c in charts:
-                png = _chart_png_html(c)
-                if png:
-                    rendered.append(f'<div class="card">{png}</div>')
-        if rendered:
-            parts.append(f'<div class="grid2">{"".join(rendered)}</div>')
-        else:
-            parts.append('<p class="muted">Charts could not be rendered — view them in the interactive web dashboard.</p>')
+        can_render = _kaleido_available()
+        for c in charts:
+            ttl = _esc(c.get("title", "")) if isinstance(c, dict) else ""
+            png = _chart_png_html(c) if can_render else ""
+            title_html = f"<h3>{ttl}</h3>" if ttl else ""
+            body = png or '<p class="muted">Chart could not be rendered server-side — view it in the interactive dashboard.</p>'
+            rendered.append(f'<div class="card">{title_html}{body}</div>')
+        parts.append(f'<div class="grid2">{"".join(rendered)}</div>')
+        parts.append("</div>")
+
+    # Text notes (Phase 1d — "some components" is not an export).
+    text_widgets = [w for w in widgets if w.get("kind") == "text"]
+    if text_widgets:
+        parts.append('<div class="section"><h2>Notes</h2>')
+        for t in text_widgets:
+            parts.append('<div class="insight">')
+            if t.get("title"):
+                parts.append(f"<h3>{_esc(t['title'])}</h3>")
+            parts.append(f'<div class="body">{_md(t.get("text", ""))}</div></div>')
         parts.append("</div>")
 
     if insights:
@@ -206,52 +216,55 @@ def _build_dashboard_html(conversation: dict) -> str:
 
 
 
-_DARK_EXPORT_CSS = """
-  /* --- print/PDF --- */
+# An export is a document, not a screenshot of the dark app (Night 3, Phase 1b).
+# LIGHT + print-designed. `print-color-adjust: exact` is load-bearing: without it
+# Chrome's --print-to-pdf and WeasyPrint drop every background colour, which is
+# what turned the old dark export into a near-blank white page.
+_EXPORT_CSS = """
   @page { size: A4; margin: 12mm; }
   @media print {
     .section, .metric, .card, .insight { page-break-inside: avoid; }
     h2 { page-break-after: avoid; }
   }
-  /* --- reset --- */
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { background: #0f0f0f; }
-  /* --- base --- */
+  html, body { background: #ffffff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-         color: #e8e8e8; line-height: 1.6; padding: 40px; text-align: left; font-size: 14px; }
-  h1 { color: #fff; font-size: 26px; margin-bottom: 24px; }
+         color: #1f2937; line-height: 1.6; padding: 40px; text-align: left; font-size: 14px; }
+  h1 { color: #0f172a; font-size: 26px; margin-bottom: 6px; }
   .section { margin-bottom: 32px; }
   .section > * + * { margin-top: 16px; }
-  h2 { color: #fff; font-size: 18px; border-bottom: 1px solid #333; padding-bottom: 8px; }
-  h3 { color: #cfcfcf; font-size: 15px; }
-  p, li { color: #cfcfcf; }
+  h2 { color: #0f172a; font-size: 18px; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; }
+  h3 { color: #1e293b; font-size: 15px; }
+  p, li { color: #334155; }
   ul { padding-left: 20px; }
-  a { color: #6aa8ff; text-decoration: none; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; border: 1px solid #333; }
-  th { background: #1c2a44; color: #fff; text-align: left; padding: 8px 10px; border: 1px solid #333; }
-  td { padding: 8px 10px; border: 1px solid #2a2a2a; color: #d6d6d6; vertical-align: top; }
-  tbody tr:nth-child(even) { background: #161616; }
+  a { color: #1d4ed8; text-decoration: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; border: 1px solid #e2e8f0; }
+  th { background: #f1f5f9; color: #0f172a; text-align: left; padding: 8px 10px; border: 1px solid #e2e8f0; }
+  td { padding: 8px 10px; border: 1px solid #eef2f6; color: #334155; vertical-align: top; }
+  tbody tr:nth-child(even) { background: #f8fafc; }
   .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
-  .high { background: #14361f; color: #5ad08a; }
-  .medium { background: #3a3413; color: #e3c34d; }
-  .low { background: #3a1717; color: #e36a6a; }
-  .search-label { font-weight: 600; color: #9bb0cc; text-transform: uppercase;
+  .high { background: #dcfce7; color: #15803d; }
+  .medium { background: #fef9c3; color: #a16207; }
+  .low { background: #fee2e2; color: #b91c1c; }
+  .search-label { font-weight: 600; color: #475569; text-transform: uppercase;
                   font-size: 12px; letter-spacing: 0.05em; margin-bottom: 6px; }
   .conf-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
-  .dot-high { background: #5ad08a; } .dot-medium { background: #e3c34d; } .dot-low { background: #e36a6a; }
+  .dot-high { background: #22c55e; } .dot-medium { background: #eab308; } .dot-low { background: #ef4444; }
   .prob { text-align: center; }
   .source-item { font-size: 13px; }
-  .muted { color: #888; font-style: italic; }
+  .muted { color: #64748b; font-style: italic; }
 """
 
 
 def _kaleido_available() -> bool:
-    """True when static PNG export of Plotly charts is possible."""
+    """True when static PNG export of Plotly charts is possible. kaleido 1.3
+    drives the SAME Chrome as the PDF step, so require both — otherwise the guard
+    passes but `to_image` throws and charts silently vanish."""
     try:
         import kaleido  # noqa: F401
-        return True
     except Exception:
         return False
+    return _chrome_path() is not None
 
 
 def _chart_png_html(chart: dict) -> str:
@@ -266,6 +279,10 @@ def _chart_png_html(chart: dict) -> str:
         import base64
         import plotly.io as pio
         fig = pio.from_json(_json.dumps(spec))
+        # Print-designed: recolour the (dark-themed) figure to light so charts
+        # match the light export document instead of sitting in black boxes.
+        fig.update_layout(template="plotly_white", paper_bgcolor="white",
+                          plot_bgcolor="white", font_color="#1f2937")
         png = pio.to_image(fig, format="png", width=900, height=int(chart.get("height") or 400))
         b64 = base64.b64encode(png).decode()
         return (
@@ -283,8 +300,8 @@ def _explainer_box_html(meta: dict, dark: bool = False) -> str:
     n_council = meta.get("n_council", 0)
     today = _esc(meta.get("today_date", ""))
     if dark:
-        box = "background:#161616;border-left:3px solid #6aa8ff;padding:12px 16px;margin:12px 0;font-size:13px;color:#cfcfcf"
-        head = "color:#fff"
+        box = "background:#f8fafc;border-left:3px solid #2563eb;padding:12px 16px;margin:12px 0;font-size:13px;color:#334155"
+        head = "color:#0f172a"
     else:
         box = "background:#f5f5f5;border-left:3px solid #333;padding:12px 16px;margin:12px 0;font-size:12px;color:#333"
         head = "color:#111"
@@ -386,7 +403,7 @@ def _build_html_export(conversation: dict) -> str:
     parts = [
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
         f"<title>{_esc(title)}</title>"
-        f"<style>{_DARK_EXPORT_CSS}</style></head><body>"
+        f"<style>{_EXPORT_CSS}</style></head><body>"
         f"<h1>{_esc(title)}</h1>"
     ]
 

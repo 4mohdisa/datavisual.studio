@@ -1,17 +1,39 @@
 DEPLOY
 
-# Overnight run 2 — handoff
+# Overnight run 3 — handoff
 
-_First line is the verdict. Deploy tag **`v1.0.1-launch`**, not `v1.0.0-launch`._
+_First line is the verdict. Deploy **`v1.0.2-correctness`** (main HEAD) — it supersedes
+`v1.0.1-launch`, which reported wrong numbers and had broken export + scroll._
 
-## Verdict: DEPLOY `v1.0.1-launch`
+## Verdict: DEPLOY `v1.0.2-correctness`
 
-`v1.0.0-launch` (Night 1) is **superseded and should NOT be deployed** — it shipped with a live SSRF
-critical and a suspected rate-limiter/poller collision. Night 2 (Phase 0 + Phase 1, the ship gate)
-fixed every pre-deploy blocker, proved the LLM paths live for the first time, and shipped the
-irreversible event instrumentation. Deploy **`v1.0.1-launch`** per `DEPLOY_RUNBOOK.md`.
+Night 3 was "prove what exists and fix what's lying." The owner found five frontend-runtime bugs in five
+minutes that 258 passing pytest tests structurally could not see. **All five are now fixed, each with a
+test that failed before its fix, and each UI fix verified in a real browser with a screenshot.** The
+test-harness gap that let them ship is closed.
 
-## Why this tag is safe
+| Owner-found bug | Fix | Proof |
+|---|---|---|
+| **Wrong number** — "total MRR" = 480,506 (summed a stock across 6mo×3plan; real ≈ 91k) | measure classifier + deterministic stock-total = latest period | `test_answer_correctness`, `test_golden_questions`; browser: "90,596 on 2026-06-01" |
+| **Invented unit** — "weekly earnings are 480,506" (no conversion) | numeric-grounding + unit guard fails closed; refuses/derives | `test_answer_correctness`; browser: refused |
+| **Blank/white export** — dark PDF, some components missing | light print-designed CSS + `print-color-adjust`; every widget; light kaleido PNGs | `test_export_document`; browser: 3-page light PDF |
+| **No export feedback** — button swallowed errors | `ExportDashboardButton` state machine idle→generating→download/error | `ExportDashboardButton.test.jsx` (Vitest) |
+| **Unreachable scroll** — share/demo won't scroll | `min-h-screen`→`h-screen` (real scroll container) | `scroll.spec.js` + cross-route class-killer; browser: reaches footer |
+
+Plus the cause: the **e2e harness now binds to a configurable port** (`E2E_PORT`, default 3100, never
+3000) and CI runs **Vitest + Playwright** on every push — the reason Night 2 skipped e2e and shipped bugs.
+
+Local at HEAD: **276 pytest · 5 Vitest · 22 Playwright e2e — all green.** Also see `DECISIONS.md`
+(Night 3) for one known limitation (ambiguous "how many in <period>" can under-aggregate; the engine is
+correct, the model's spec choice isn't always).
+
+---
+
+# Overnight run 2 — handoff (historical)
+
+_Night 2 shipped `v1.0.1-launch`. Night 3's fixes are additive on top._
+
+## Why `v1.0.1-launch` was safe
 
 **Phase 0 — pre-deploy blockers (all fixed + tested):**
 

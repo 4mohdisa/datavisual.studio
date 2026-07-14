@@ -40,8 +40,19 @@ jobs:
       - name: Backend tests (hermetic)
         run: uv run pytest -p no:warnings -q
 
+      - name: Frontend unit tests (Vitest + RTL)
+        run: cd frontend && npm run test:unit
+
       - name: Frontend build
         run: cd frontend && npm run build
+
+      - name: Install Playwright browser
+        run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: E2E (Playwright — open mode, LLM-free journeys)
+        run: cd frontend && npm run test:e2e
+        env:
+          E2E_PORT: '3100'
 
       - name: Restore drill (backup → restore → keys decrypt)
         run: ./scripts/restore-test.sh

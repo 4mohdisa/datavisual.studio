@@ -36,6 +36,9 @@ def test_export_html_contains_every_widget(client):
 
 
 def test_export_html_embeds_chart_images(client):
+    from backend import pdf_export
+    if not pdf_export._kaleido_available():
+        pytest.skip("server-side chart PNGs need kaleido + Chrome (absent on this runner)")
     cid, widgets = _sample_dashboard(client)
     if not any(w.get("kind") == "chart" for w in widgets):
         pytest.skip("no chart widgets in sample")

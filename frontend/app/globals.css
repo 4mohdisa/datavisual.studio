@@ -173,7 +173,6 @@ body {
 .pulse-border { animation: pulse-border 2s ease-in-out infinite; }
 
 /* "Being queried" indeterminate bar (council model tabs). */
-@keyframes querying-bar { 0% { left: -40%; } 100% { left: 100%; } }
 
 /* ===========================================================================
    Landing page — scroll reveal + looping "feature demo" animations.
@@ -208,8 +207,6 @@ body {
 .dv-pulse { animation: dv-pulse 2.4s ease-in-out infinite; }
 
 /* Dots flowing along the connector pipe. */
-@keyframes dv-flow { 0% { transform: translateX(0); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { transform: translateX(112px); opacity: 0; } }
-.dv-flow { animation: dv-flow 2.6s linear infinite; }
 
 /* Ambient hero glow drift. */
 @keyframes dv-drift { 0%, 100% { transform: translate3d(0, 0, 0); } 50% { transform: translate3d(0, -14px, 0); } }
@@ -217,7 +214,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   [data-reveal] { opacity: 1 !important; transform: none !important; animation: none !important; }
-  .dv-bar, .dv-draw, .dv-cycle, .dv-type, .dv-pulse, .dv-flow, .dv-drift { animation: none !important; }
+  .dv-bar, .dv-draw, .dv-cycle, .dv-type, .dv-pulse, .dv-drift { animation: none !important; }
   /* Settle the loops into their "shown" end-state so the demos read clearly. */
   .dv-bar { transform: scaleY(1); }
   .dv-draw { stroke-dashoffset: 0; }

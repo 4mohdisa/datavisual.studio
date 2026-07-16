@@ -27,21 +27,8 @@ _GRID = dict(gridcolor="rgb(35,35,35)", zerolinecolor="rgb(35,35,35)")
 
 
 def _read_csv_robust(path: str) -> pd.DataFrame:
-    """Read a CSV, detecting encoding and falling back utf-8 → latin-1 → cp1252."""
-    encodings: list[str] = []
-    # Prefer charset_normalizer's detection if available (transitive dep).
-    try:
-        from charset_normalizer import from_path
-        best = from_path(path).best()
-        if best and best.encoding:
-            encodings.append(best.encoding)
-    except Exception:
-        pass
+    """Read a CSV, falling back utf-8 → latin-1 → cp1252."""
     for enc in ("utf-8", "latin-1", "cp1252"):
-        if enc not in encodings:
-            encodings.append(enc)
-
-    for enc in encodings:
         try:
             return pd.read_csv(path, encoding=enc)
         except (UnicodeDecodeError, UnicodeError):
@@ -221,13 +208,7 @@ def _detect_and_build_charts(df: pd.DataFrame) -> list[dict]:
     if len(numeric_cols) == 2:
         x, y = numeric_cols
         corr = df[[x, y]].corr().iloc[0, 1]
-        # OLS trendline needs statsmodels; degrade to a plain scatter if it's absent
-        # so a 2-numeric dataset never crashes the whole analysis.
-        try:
-            import statsmodels  # noqa: F401
-            fig = px.scatter(df, x=x, y=y, trendline="ols", trendline_color_override="rgb(255,120,80)")
-        except Exception:
-            fig = px.scatter(df, x=x, y=y)
+        fig = px.scatter(df, x=x, y=y)
         fig.update_layout(title=f"{x} vs {y} (r={corr:.2f})")
         charts.append({"title": f"{x} vs {y}", "type": "scatter", "plotly_json": _fig_json(fig)})
         return charts

@@ -5,7 +5,6 @@ import os
 import re
 import secrets
 import threading
-from contextlib import contextmanager
 from typing import Callable, List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR
@@ -27,14 +26,6 @@ def conversation_lock(conversation_id: str) -> threading.RLock:
             lock = threading.RLock()
             _conv_locks[conversation_id] = lock
         return lock
-
-
-@contextmanager
-def locked_conversation(conversation_id: str):
-    """Hold the per-id lock for a synchronous read-modify-write. Do NOT `await`
-    inside this block — the lock is a threading lock and would stall the loop."""
-    with conversation_lock(conversation_id):
-        yield
 
 
 def update_conversation(conversation_id: str, mutator: Callable[[dict], None]) -> Optional[dict]:

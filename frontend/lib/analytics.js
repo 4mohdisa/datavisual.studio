@@ -33,7 +33,7 @@ function setCookie(name, value, days) {
 
 // The anon id: cookie first (survives across tabs + the signup redirect), with
 // localStorage as a fallback mirror. Created + persisted on first read.
-export function anonId() {
+function anonId() {
   if (typeof window === 'undefined') return null;
   let id = getCookie(ANON_KEY);
   if (!id) {

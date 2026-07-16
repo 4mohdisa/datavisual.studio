@@ -150,14 +150,6 @@ export const api = {
     return response.json();
   },
 
-  /** Fetch a read-only public share view by token (no auth). */
-  async getPublicShare(shareId) {
-    const response = await fetch(`${API_BASE}/api/public/${shareId}`);
-    if (response.status === 404) throw new Error('unavailable');
-    if (!response.ok) throw new Error('Failed to load shared view');
-    return response.json();
-  },
-
   /**
    * Import data from an external source (SQL database or REST API).
    * Returns the same shape as uploadFile, so it plugs into the same flow.

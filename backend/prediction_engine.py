@@ -629,12 +629,6 @@ def _compute_agreement(model_a_probs: dict[str, float], model_b_probs: dict[str,
     return agreement
 
 
-def _attach_agreement(results: list[PredictionResult], agreement: dict[str, float]) -> list[PredictionResult]:
-    for r in results:
-        r.model_agreement = round(agreement.get(r.entity, 1.0), 3)
-    return results
-
-
 # Empirically-derived host-nation ELO boost used by most academic football models (2.2).
 HOME_ADVANTAGE_ELO = 65.0
 
@@ -1466,7 +1460,6 @@ def _build_elo_trajectory_chart(go, df: Any, columns_info: Optional[list[dict]],
             "type": "line", "plotly_json": _fig_to_dict(fig), "height": 300}
 
 
-_SOURCE_LABELS = {"dataset": "Data", "internet": "Web", "council": "Council"}
 
 
 def _top5_lines(table: list[dict]) -> str:

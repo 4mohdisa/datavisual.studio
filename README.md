@@ -74,8 +74,8 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) — Docker Compose or split backend/frontend 
 Required prod env: `PROXY_SHARED_SECRET` (both sides), Clerk keys (frontend),
 `ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, and `NEXT_PUBLIC_SITE_URL` (SEO/canonical).
 PDF export + charts need Chromium/Chrome on the backend host (the Docker image
-installs it). See also [CLAUDE.md](CLAUDE.md) for technical notes and
-[PROJECT_AUDIT.md](PROJECT_AUDIT.md) for a full architecture + feature map.
+installs it). See also [CLAUDE.md](CLAUDE.md) for the architecture map and
+technical notes, and [DEPLOY_RUNBOOK.md](DEPLOY_RUNBOOK.md) to go live.
 
 ## Tech stack
 

@@ -1,13 +1,13 @@
-# Deploy runbook — datavisual.studio v1.0.0-launch
+# Deploy runbook — datavisual.studio v1.0.2-correctness
 
-Copy-pasteable steps to take `v1.0.0-launch` live. Two supported topologies:
+Copy-pasteable steps to take `v1.0.2-correctness` live. Two supported topologies:
 
 - **A) Split (recommended):** Vercel frontend + AWS backend. Polling pipeline + direct upload make
   this work within serverless limits.
 - **B) Single box (fallback, already tested):** `docker compose up` on the AWS box serves both halves.
   If anything about the split misbehaves, use this — it needs none of the split-specific config.
 
-Tag to deploy: `git checkout v1.0.0-launch`.
+Tag to deploy: `git checkout v1.0.2-correctness`.
 
 ---
 
@@ -55,7 +55,7 @@ openssl rand -hex 24   # → ADMIN_PASSWORD
 ## 3A. Backend on AWS (split)
 
 ```bash
-git clone <repo> && cd datavisual.studio && git checkout v1.0.0-launch
+git clone <repo> && cd datavisual.studio && git checkout v1.0.2-correctness
 cp .env.example .env
 # set in .env: PROXY_SHARED_SECRET, SECRET_KEY, ADMIN_PASSWORD, FRONTEND_ORIGIN=https://<your-vercel-domain>
 # optional: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com  — CORS allowlist; when set it
@@ -104,7 +104,7 @@ WantedBy=multi-user.target
 ## 3B/4B. Single box (fallback)
 
 ```bash
-git checkout v1.0.0-launch
+git checkout v1.0.2-correctness
 cp .env.example .env   # set PROXY_SHARED_SECRET, SECRET_KEY, ADMIN_PASSWORD, and the Clerk keys
 docker compose up -d --build
 ```
@@ -165,3 +165,19 @@ periodically (a monthly cron is cheap insurance):
   only used in open dev mode and is never spent on a signed-in user's request.
 - Rollback: redeploy the previous tag (frontend on Vercel; `git checkout <tag> && docker compose up -d --build`
   or restart the systemd unit on AWS). `data/` is untouched by a rollback.
+
+## 8. Environment variables (reference)
+
+| Variable | Where | Required | What |
+|---|---|---|---|
+| `PROXY_SHARED_SECRET` | both | yes (prod) | Long random (`openssl rand -hex 32`), **byte-identical** on both halves. Backend 403s any `/api` request without it. |
+| `SECRET_KEY` | backend | yes (prod) | Fernet key for API keys at rest. **Travels with `data/`** — back them up together; a mismatch refuses boot. |
+| `ADMIN_PASSWORD` | backend | recommended | Gate for `/admin` (`X-Admin-Password`). Long + random. |
+| `FRONTEND_ORIGIN` | backend | recommended | Public frontend URL; appended to CORS + used as the prod marker. |
+| `ALLOWED_ORIGINS` | backend | optional | Comma-sep CORS allowlist; when set it REPLACES the localhost dev defaults. Never a wildcard. |
+| `TRUSTED_PROXY_HOPS` | backend | optional | X-Forwarded-For hops the rate limiter trusts (default 1). |
+| `BROWSER_PATH` | backend | optional | Chrome/Chromium path for chart PNGs + PDF (Docker sets `/usr/bin/chromium`). |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY` | frontend | yes (auth) | Clerk identity; the app locks to per-user scoping the moment these are set. |
+| `BACKEND_URL` | frontend | yes (split) | Server-to-server backend URL the Next proxy calls. |
+| `NEXT_PUBLIC_BACKEND_ORIGIN` | frontend | split | Browser-reachable backend origin; enables >4.5 MB direct upload. |
+| `NEXT_PUBLIC_SITE_URL` | frontend | recommended | Canonical URL for SEO/sitemap. |

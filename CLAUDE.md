@@ -157,9 +157,9 @@ stays dormant unless the data looks like ratings.
 ## Frontend Structure (`frontend/`) — Next.js 16, App Router, JSX
 
 - **app/** — thin server pages only: `/` renders the marketing `Landing`
-  (components/landing/ — Landing.jsx + Blocks.jsx, dependency-free SVG chart
-  blocks), `/studio` and `/chat/[id]` render `AppShell`, `/dashboard/[id]`
-  renders `Dashboard`. In-app "home" navigation targets `/studio`, NOT `/`.
+  (components/landing/ — Landing.jsx + FeatureDemos.jsx + Reveal.jsx + HeroReplay.jsx,
+  dependency-free SVG/CSS demos), `/studio` and `/chat/[id]` render `AppShell`,
+  `/dashboard/[id]` renders `Dashboard`. In-app "home" targets `/studio`, NOT `/`.
   `layout.js` wraps everything in the client `ErrorBoundary` and imports
   `globals.css`.
 - **components/AppShell.jsx** ('use client') — conversation state, SSE event

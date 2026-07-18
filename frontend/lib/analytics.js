@@ -7,7 +7,24 @@
 const ANON_KEY = 'dv_anon_id';
 const SESSION_KEY = 'dv_session_id';
 const FIRST_TOUCH_KEY = 'dv_first_touch';
+const OPTOUT_KEY = 'dv_analytics_optout';
 const COOKIE_DAYS = 365;
+
+// Analytics opt-out (Launch Phase 4b). Honours an explicit stored choice AND the
+// browser's Global Privacy Control signal. When opted out, track() is a no-op.
+export function analyticsOptedOut() {
+  if (typeof window === 'undefined') return false;
+  try { if (localStorage.getItem(OPTOUT_KEY) === '1') return true; } catch { /* ignore */ }
+  if (typeof navigator !== 'undefined' && navigator.globalPrivacyControl === true) return true;
+  return false;
+}
+
+export function setAnalyticsOptOut(optOut) {
+  try {
+    if (optOut) localStorage.setItem(OPTOUT_KEY, '1');
+    else localStorage.removeItem(OPTOUT_KEY);
+  } catch { /* ignore */ }
+}
 
 function uid(prefix) {
   const rand =
@@ -79,6 +96,7 @@ function firstTouch() {
 
 export function track(event, props) {
   if (typeof window === 'undefined') return;
+  if (analyticsOptedOut()) return;   // respect the visitor's choice / GPC
   try {
     const ft = firstTouch();
     const body = JSON.stringify({

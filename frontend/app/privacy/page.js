@@ -1,14 +1,15 @@
 import LegalPage, { Section } from '../../components/legal/LegalPage';
+import AnalyticsOptOut from '../../components/AnalyticsOptOut';
 
 export const metadata = {
   title: 'Privacy policy',
-  description: 'How datavisual.studio stores your data and handles your AI provider keys.',
+  description: 'How datavisual.studio stores your data, handles your AI provider keys, and what its first-party analytics collect — with a one-click opt-out.',
   alternates: { canonical: '/privacy' },
 };
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy policy" updated="6 July 2026">
+    <LegalPage title="Privacy policy" updated="19 July 2026">
       <Section title="What this service is">
         <p>
           datavisual.studio is a free data-visualisation and research tool. You upload or
@@ -57,11 +58,33 @@ export default function PrivacyPage() {
         </p>
       </Section>
 
-      <Section title="Cookies">
+      <Section title="Cookies &amp; product analytics">
         <p>
-          The app uses only the cookies required for authentication sessions. There is no
-          advertising or cross-site tracking.
+          Two kinds of first-party cookies, and nothing more — no advertising, and no
+          cross-site or third-party trackers:
         </p>
+        <ul className="list-disc pl-5 flex flex-col gap-1.5 m-0">
+          <li><strong>Authentication</strong> — the session cookies Clerk needs to keep you signed in.</li>
+          <li>
+            <strong>Product analytics</strong> — a first-party <code className="text-[var(--text)]">dv_anon_id</code>{' '}
+            cookie (a random visitor id, kept ~12 months) plus a per-session id, so we can understand
+            how the product is used and improve it.
+          </li>
+        </ul>
+        <p>
+          Each analytics event records the <strong>event name</strong> (e.g. &quot;landing_view&quot;,
+          &quot;dashboard_created&quot;), those ids, the <strong>page path</strong> (never the query
+          string), the referrer, and any UTM campaign parameters from your first visit. Events post to
+          our own server — not to any third party.
+        </p>
+        <p>
+          <strong>What is never in an analytics event: your data.</strong> Dataset contents, cell
+          values, questions, dashboard specifics and API keys are excluded by design — event metadata
+          is the only thing sent. Analytics records are retained on our server and are not sold or
+          shared.
+        </p>
+        <p className="text-[var(--text)]">You can turn product analytics off in this browser — we also honour Global Privacy Control:</p>
+        <AnalyticsOptOut />
       </Section>
 
       <Section title="Changes">

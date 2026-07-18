@@ -98,10 +98,11 @@ Stated plainly — overclaiming is worse than a boundary:
 - **Connector follow-ups.** SQLite/file DB URLs in the connector are a known local-file-read
   follow-up; the SSRF guard has a narrow DNS-rebinding TOCTOU window (mitigate with IMDSv2).
 
-## Contributing & security
+## Contributing, security & accessibility
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) (how to run it, the test bar, invariants not to break) and
-[SECURITY.md](SECURITY.md) (private vulnerability reporting).
+See [CONTRIBUTING.md](CONTRIBUTING.md) (how to run it, the test bar, invariants not to break),
+[SECURITY.md](SECURITY.md) (private vulnerability reporting), and [ACCESSIBILITY.md](ACCESSIBILITY.md)
+(WCAG 2.2 AA target, what's verified, known gaps).
 
 ## Tech stack
 

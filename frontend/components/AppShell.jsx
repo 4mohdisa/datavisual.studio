@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Menu } from 'lucide-react';
+import { useFocusTrap } from './ui/useFocusTrap';
 import Sidebar from './Sidebar';
 import ChatInterface from './ChatInterface';
 import Home from './Home';
@@ -107,6 +108,21 @@ function AppShell() {
   const [activityOpen, setActivityOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false); // mobile slide-over
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Below md the sidebar is a modal slide-over drawer, so it traps focus and
+  // restores it to the menu button on close. On desktop it's static (no trap).
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = (e) => setIsMobile(e.matches);
+    setIsMobile(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const sidebarTrapRef = useFocusTrap({
+    active: sidebarOpen && isMobile,
+    onEscape: () => setSidebarOpen(false),
+  });
   // Global keyboard shortcuts (6.4): Cmd/Ctrl K (palette), N (new), Slash (panel), Escape (close).
   useEffect(() => {
     const onKey = (e) => {
@@ -595,7 +611,16 @@ function AppShell() {
       {sidebarOpen && (
         <div className="md:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setSidebarOpen(false)} aria-hidden="true" />
       )}
-      <div className={`fixed md:static inset-y-0 left-0 z-50 transition-transform duration-200 md:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <div
+        ref={sidebarTrapRef}
+        role={sidebarOpen && isMobile ? 'dialog' : undefined}
+        aria-modal={sidebarOpen && isMobile ? 'true' : undefined}
+        aria-label={sidebarOpen && isMobile ? 'Navigation menu' : undefined}
+        // When the mobile drawer is closed it's only slid off-screen — mark it
+        // inert so keyboard focus can't land in the hidden panel. (Desktop: static, never inert.)
+        inert={(!sidebarOpen && isMobile) || undefined}
+        className={`fixed md:static inset-y-0 left-0 z-50 outline-none transition-transform duration-200 md:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      >
         <Sidebar
           conversations={sidebarConversations}
           currentConversationId={currentConversationId}

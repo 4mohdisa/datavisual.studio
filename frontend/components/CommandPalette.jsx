@@ -1,11 +1,12 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo } from 'react';
+import { useFocusTrap } from './ui/useFocusTrap';
 
 // 6.4 — Cmd/Ctrl+K command palette: fuzzy-ish search over conversation titles.
+// A modal dialog: focus is trapped while open and restored to the trigger on
+// close; the trap moves focus to the search input (first focusable) on open.
 export default function CommandPalette({ conversations, onSelect, onClose }) {
   const [query, setQuery] = useState('');
-  const inputRef = useRef(null);
-
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  const trapRef = useFocusTrap({ active: true, onEscape: onClose });
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -16,13 +17,17 @@ export default function CommandPalette({ conversations, onSelect, onClose }) {
   }, [conversations, query]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-[var(--z-modal,50)] flex items-start justify-center pt-[15vh] bg-black/50" onClick={onClose}>
       <div
-        className="w-[520px] max-w-[90vw] bg-[var(--surface-input)] border border-[var(--border-2)] rounded-xl shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden"
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search conversations"
+        tabIndex={-1}
+        className="w-[520px] max-w-[90vw] bg-[var(--surface-input)] border border-[var(--border-2)] rounded-xl shadow-[0_8px_40px_rgba(0,0,0,0.5)] overflow-hidden outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <input
-          ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search conversations…"

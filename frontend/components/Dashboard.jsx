@@ -14,6 +14,7 @@ import Button from './ui/Button';
 import Modal from './ui/Modal';
 import { api } from '../lib/api';
 import { busyLabel as guessBusyLabel } from '../lib/intent';
+import { useFocusTrap } from './ui/useFocusTrap';
 
 // ---------------------------------------------------------------------------
 // Dashboard assistant — chat panel that edits the dashboard in place
@@ -72,9 +73,13 @@ function Working({ working }) {
   );
 }
 
-function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pinOp, onPin }) {
+function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pinOp, onPin, overlay }) {
   const [input, setInput] = useState('');
   const scrollRef = useRef(null);
+  // Below lg the panel is a full-screen overlay (a modal drawer), so it traps
+  // focus and restores it to the trigger on close. On desktop it's a persistent
+  // sidebar — no trap (a caged sidebar would be worse than none).
+  const trapRef = useFocusTrap({ active: overlay, onEscape: onClose });
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -89,7 +94,13 @@ function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pi
   };
 
   return (
-    <section aria-label="Dashboard assistant" className="fixed inset-0 z-[50] w-full lg:relative lg:inset-auto lg:z-auto lg:w-[360px] shrink-0 h-screen flex flex-col border-l border-[var(--border)] bg-[var(--background)]">
+    <section
+      ref={trapRef}
+      tabIndex={-1}
+      aria-label="Dashboard assistant"
+      role={overlay ? 'dialog' : undefined}
+      aria-modal={overlay ? 'true' : undefined}
+      className="fixed inset-0 z-[50] w-full lg:relative lg:inset-auto lg:z-auto lg:w-[360px] shrink-0 h-screen flex flex-col border-l border-[var(--border)] bg-[var(--background)] outline-none">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
         <Sparkles size={15} strokeWidth={1.5} className="text-[var(--accent)]" />
         <h2 className="text-sm font-semibold text-[var(--text)]">Dashboard assistant</h2>
@@ -190,16 +201,36 @@ export default function Dashboard({ id }) {
   const [panelOpen, setPanelOpen] = useState(true);
   const [shareId, setShareId] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
+  // Below lg the assistant is a full-screen overlay (a modal drawer) rather than
+  // a sidebar; `isOverlay` drives its focus trap + dialog semantics.
+  const [isOverlay, setIsOverlay] = useState(false);
 
-  // On phones the assistant is a full-screen overlay, so open it lands users on
-  // the assistant, not their dashboard. Start it closed below lg; desktop keeps
-  // the side panel open. (Runs once on mount — SSR/first paint stays open to
-  // match hydration, then corrects.)
+  // On phones the assistant is a full-screen overlay, so leaving it open lands
+  // users on the assistant, not their dashboard. Start it closed below lg (once
+  // on mount — SSR/first paint stays open to match hydration, then corrects),
+  // and track the overlay breakpoint so the panel can trap focus when it's modal.
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
-      setPanelOpen(false);
-    }
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 1023px)');
+    if (mq.matches) setPanelOpen(false);
+    const onChange = (e) => setIsOverlay(e.matches);
+    setIsOverlay(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
   }, []);
+
+  // Restore focus to the "Edit with AI" trigger when the overlay drawer closes.
+  // The trigger unmounts while the drawer is open, so the trap can't restore to
+  // it — we re-focus the remounted button here. Gated on drawerOpenedRef so the
+  // initial mobile mount-close (which isn't a user action) doesn't grab focus.
+  const editAiRef = useRef(null);
+  const drawerOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!panelOpen && drawerOpenedRef.current && isOverlay) {
+      drawerOpenedRef.current = false;
+      editAiRef.current?.focus();
+    }
+  }, [panelOpen, isOverlay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -461,8 +492,9 @@ export default function Dashboard({ id }) {
               <ExportDashboardButton conversationId={id} />
               {!panelOpen && (
                 <button
-                  onClick={() => setPanelOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--border-2)] text-[13px] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--active)] transition"
+                  ref={editAiRef}
+                  onClick={() => { drawerOpenedRef.current = true; setPanelOpen(true); }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[var(--border-2)] text-[13px] text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--active)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] transition"
                 >
                   <PanelRightOpen size={14} strokeWidth={1.5} /> Edit with AI
                 </button>
@@ -618,6 +650,7 @@ export default function Dashboard({ id }) {
           onClose={() => setPanelOpen(false)}
           pinOp={pinOp}
           onPin={handlePin}
+          overlay={isOverlay}
         />
       )}
     </div>

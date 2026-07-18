@@ -89,7 +89,7 @@ function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pi
   };
 
   return (
-    <section aria-label="Dashboard assistant" className="w-[360px] shrink-0 h-screen flex flex-col border-l border-[var(--border)] bg-[var(--background)]">
+    <section aria-label="Dashboard assistant" className="fixed inset-0 z-[50] w-full lg:relative lg:inset-auto lg:z-auto lg:w-[360px] shrink-0 h-screen flex flex-col border-l border-[var(--border)] bg-[var(--background)]">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
         <Sparkles size={15} strokeWidth={1.5} className="text-[var(--accent)]" />
         <h2 className="text-sm font-semibold text-[var(--text)]">Dashboard assistant</h2>
@@ -190,6 +190,16 @@ export default function Dashboard({ id }) {
   const [panelOpen, setPanelOpen] = useState(true);
   const [shareId, setShareId] = useState(null);
   const [shareOpen, setShareOpen] = useState(false);
+
+  // On phones the assistant is a full-screen overlay, so open it lands users on
+  // the assistant, not their dashboard. Start it closed below lg; desktop keeps
+  // the side panel open. (Runs once on mount — SSR/first paint stays open to
+  // match hydration, then corrects.)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      setPanelOpen(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

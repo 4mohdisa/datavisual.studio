@@ -20,7 +20,7 @@ export const metadata = {
     'AI research', 'multi-model AI', 'LLM council', 'dashboard from CSV',
     'connect database dashboard', 'deep research report', 'data analysis tool',
   ],
-  authors: [{ name: 'Mohammed Isa', url: 'https://github.com/4mohdisa' }],
+  authors: [{ name: 'Mohammed Isa', url: 'https://isaxcode.com' }],
   creator: 'Mohammed Isa',
   alternates: { canonical: '/' },
   openGraph: {
@@ -69,6 +69,7 @@ export default function RootLayout({ children }) {
   const inner = (
     <html lang="en">
       <body>
+        <a href="#main-content" className="skip-link">Skip to content</a>
         <ErrorBoundary>{children}</ErrorBoundary>
         {/* anon→user analytics stitch — needs a ClerkProvider ancestor. */}
         {authEnabled && <Identify />}

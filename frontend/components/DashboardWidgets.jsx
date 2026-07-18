@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import Plot from './LazyPlot';
-import { Download, X, Sparkles, Globe, Pencil, ChevronUp, ChevronDown, LineChart } from 'lucide-react';
+import { Download, X, Sparkles, Globe, Pencil, ChevronUp, ChevronDown, LineChart, Table2 } from 'lucide-react';
+import { chartSummary, chartToTable } from '../lib/chartA11y';
 
 // The widget renderers + grid layout for a dashboard spec. Shared by the
 // interactive editor (components/Dashboard.jsx, which passes handlers) and the
@@ -26,7 +27,7 @@ function RemoveButton({ onRemove, id }) {
   return (
     <button
       onClick={() => onRemove(id)}
-      className="absolute top-2 right-2 z-10 p-1 rounded text-[var(--faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--danger)] hover:bg-[var(--active)] transition"
+      className="absolute top-2 right-2 z-10 p-1.5 rounded text-[var(--faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-[var(--danger)] hover:bg-[var(--active)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] transition"
       title="Remove from dashboard"
       aria-label="Remove widget"
     >
@@ -38,9 +39,9 @@ function RemoveButton({ onRemove, id }) {
 // Hover strip: move up/down (+ optional edit) — sits left of the remove ✕.
 function WidgetControls({ id, onMove, onEdit, widget }) {
   if (!onMove && !onEdit) return null;
-  const btn = 'p-1 rounded text-[var(--faint)] opacity-0 group-hover:opacity-100 hover:text-[var(--text)] hover:bg-[var(--active)] transition';
+  const btn = 'p-1.5 rounded text-[var(--faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-[var(--text)] hover:bg-[var(--active)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] transition';
   return (
-    <div className="absolute top-2 right-8 z-10 flex">
+    <div className="absolute top-2 right-8 z-10 flex gap-0.5">
       {onEdit && (
         <button onClick={() => onEdit(widget)} className={btn} title="Edit" aria-label="Edit widget">
           <Pencil size={13} strokeWidth={1.5} />
@@ -72,20 +73,73 @@ function MetricCard({ widget, onRemove, onMove, onEdit }) {
   );
 }
 
+// A compact text-alternative table rendered by the chart's "View as table"
+// toggle (a11y, Phase 4d). Same numbers, plotted; readable by everyone.
+function ChartDataTable({ data }) {
+  const { columns, rows } = useMemo(() => chartToTable(data), [data]);
+  if (!rows.length) return null;
+  return (
+    <div className="overflow-x-auto border border-[var(--border-2)] rounded-md" style={{ height: 320 }}>
+      <table className="w-full border-collapse text-[12px]">
+        <thead>
+          <tr>
+            {columns.map((c, i) => (
+              <th key={i} scope="col" className="sticky top-0 bg-[var(--user-bubble)] text-[oklch(0.80_0_0)] px-3 py-2 text-left whitespace-nowrap">{c || '—'}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="odd:bg-[var(--raised)]">
+              {columns.map((c, j) => (
+                <td key={j} className="px-3 py-1.5 border-t border-[var(--border)] text-[oklch(0.82_0_0)] whitespace-nowrap tabular-nums">
+                  {r[c] == null ? <span className="text-[oklch(0.35_0_0)]">—</span> : String(r[c])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ChartCard({ widget, onRemove, onEdit, onMove }) {
   const spec = widget.plotly_json || {};
+  const [asTable, setAsTable] = useState(false);
+  // Deterministic screen-reader summary from the plotted numbers (NOT the LLM).
+  const summary = useMemo(() => chartSummary(widget.title, spec.data || []), [widget.title, spec.data]);
   return (
     <div className="group relative rounded-lg border border-[var(--border-2)] bg-[var(--raised)] p-3">
       <RemoveButton onRemove={onRemove} id={widget.id} />
       <WidgetControls id={widget.id} onMove={onMove} onEdit={widget.spec ? onEdit : null} widget={widget} />
-      <div className="text-[13px] font-semibold text-[var(--muted)] mb-1 capitalize pr-6">{widget.title}</div>
-      <Plot
-        data={spec.data || []}
-        layout={{ ...(spec.layout || {}), title: undefined, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: 'rgb(220,220,220)' }, margin: { l: 50, r: 20, t: 10, b: 40 }, height: 320, autosize: true, width: undefined }}
-        style={{ width: '100%', height: '320px' }}
-        useResizeHandler
-        config={{ displayModeBar: false, responsive: true }}
-      />
+      {/* pr-16 keeps the toggle clear of the absolute hover controls (edit/move/
+          remove) at the top-right, so it isn't obscured (WCAG 2.2 target size). */}
+      <div className="flex items-center gap-2 mb-1 pr-16">
+        <div className="text-[13px] font-semibold text-[var(--muted)] capitalize mr-auto">{widget.title}</div>
+        <button
+          onClick={() => setAsTable((v) => !v)}
+          aria-pressed={asTable}
+          className="inline-flex items-center gap-1 shrink-0 h-7 px-2 text-[11px] text-[var(--faint)] hover:text-[var(--text)] hover:bg-[var(--active)] rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] transition"
+          title={asTable ? 'View as chart' : 'View as table'}
+        >
+          {asTable ? <LineChart size={13} strokeWidth={1.5} /> : <Table2 size={13} strokeWidth={1.5} />}
+          {asTable ? 'Chart' : 'Table'}
+        </button>
+      </div>
+      {asTable ? (
+        <ChartDataTable data={spec.data || []} />
+      ) : (
+        <div role="img" aria-label={summary}>
+          <Plot
+            data={spec.data || []}
+            layout={{ ...(spec.layout || {}), title: undefined, paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: 'rgb(220,220,220)' }, margin: { l: 50, r: 20, t: 10, b: 40 }, height: 320, autosize: true, width: undefined }}
+            style={{ width: '100%', height: '320px' }}
+            useResizeHandler
+            config={{ displayModeBar: false, responsive: true }}
+          />
+        </div>
+      )}
     </div>
   );
 }

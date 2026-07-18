@@ -21,16 +21,59 @@
   --border-2: oklch(0.25 0 0);       /* input bar + stronger borders */
   --border-3: oklch(0.30 0 0);       /* control borders */
   --text: oklch(0.92 0 0);           /* primary text */
-  --muted: oklch(0.65 0 0);          /* secondary text */
-  --faint: oklch(0.45 0 0);          /* tertiary text / disabled */
+  --muted: oklch(0.68 0 0);          /* secondary text — AA (≥4.5:1) on every surface */
+  --faint: oklch(0.62 0 0);          /* tertiary text — bumped from 0.45 to clear AA on the
+                                        darkest surfaces (#060606/#0d0d0d); small text needs 4.5:1 */
   --accent: #4a90e2;
   --danger: #e05555;
   --new-chat: oklch(0.98 0 0);
   --new-chat-hover: oklch(0.88 0 0);
+
+  /* Semantic status + focus tokens (Phase 4a). Values chosen to clear WCAG AA
+     on the dark surfaces above — status colours ≥4.5:1 as text on --background,
+     the focus ring ≥3:1 against adjacent surfaces (WCAG 2.2 non-text contrast). */
+  --focus-ring: #6ea8ff;   /* light blue, ~8:1 on --background */
+  --success: #3fb950;      /* delta up / positive */
+  --warning: #d29922;      /* caution notes (referenced by the assistant "working" panel) */
+  --delta-up: #3fb950;
+  --delta-down: #f0776a;   /* lighter than --danger so it stays AA as small text */
+
+  /* Motion + layering scales — one source of truth so overlays stop fighting. */
+  --duration-fast: 0.15s;
+  --duration-base: 0.28s;
+  --duration-slow: 0.5s;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --z-base: 1;
+  --z-sticky: 10;
+  --z-overlay: 40;
+  --z-modal: 50;
+  --z-toast: 60;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Skip-to-content link (Phase 4d): visually hidden until focused, then pinned
+   top-left so a keyboard user can jump past nav straight to <main>. */
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: var(--z-toast);
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--background);
+  font-size: 13px;
+  font-weight: 600;
+  transform: translateY(-150%);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 body {
@@ -220,4 +263,18 @@ body {
   .dv-draw { stroke-dashoffset: 0; }
   .dv-cycle { opacity: 1; transform: none; }
   .dv-type { clip-path: inset(0 0 0 0); }
+}
+
+/* Global reduced-motion backstop (Phase 4d): every remaining animation/transition
+   (message fades, activity stagger, skeleton shimmer, page transition, spinners)
+   collapses to near-instant. Spinners keep ONE slow turn so "busy" is still
+   legible without motion sickness. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-spin, .pulse-border { animation-duration: 1.2s !important; animation-iteration-count: infinite !important; }
 }

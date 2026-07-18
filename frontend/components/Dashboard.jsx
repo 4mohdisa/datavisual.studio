@@ -89,16 +89,18 @@ function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pi
   };
 
   return (
-    <div className="w-[360px] shrink-0 h-screen flex flex-col border-l border-[var(--border)] bg-[var(--background)]">
+    <section aria-label="Dashboard assistant" className="w-[360px] shrink-0 h-screen flex flex-col border-l border-[var(--border)] bg-[var(--background)]">
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
         <Sparkles size={15} strokeWidth={1.5} className="text-[var(--accent)]" />
-        <div className="text-sm font-semibold text-[var(--text)]">Dashboard assistant</div>
-        <button onClick={onClose} className="ml-auto p-1 rounded text-[var(--muted)] hover:text-[var(--text)]" aria-label="Close assistant">
+        <h2 className="text-sm font-semibold text-[var(--text)]">Dashboard assistant</h2>
+        <button onClick={onClose} className="ml-auto p-1 rounded text-[var(--muted)] hover:text-[var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)]" aria-label="Close assistant">
           <PanelRightClose size={16} strokeWidth={1.5} />
         </button>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+      {/* Answers arrive asynchronously — a live region announces them (and the
+          busy status) to screen readers, which otherwise get nothing (Phase 4d). */}
+      <div ref={scrollRef} aria-live="polite" className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
         {history.length === 0 && (
           <div className="text-[13px] text-[var(--muted)] leading-relaxed">
             Edit this dashboard by chatting — add or change charts and metrics,
@@ -109,7 +111,8 @@ function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pi
         {history.map((h, i) => (
           <div
             key={i}
-            className={`max-w-[92%] rounded-lg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap ${
+            tabIndex={h.role === 'assistant' ? 0 : undefined}
+            className={`max-w-[92%] rounded-lg px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] ${
               h.role === 'user'
                 ? 'self-end bg-[var(--user-bubble)] text-[var(--text)]'
                 : 'self-start bg-[var(--raised)] border border-[var(--border)] text-[var(--muted)]'
@@ -120,8 +123,8 @@ function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pi
         ))}
         {!busy && <Working working={working} />}
         {busy && (
-          <div className="self-start flex items-center gap-2 text-[13px] text-[var(--muted)]">
-            <Loader2 size={14} className="animate-spin" /> {busyLabel || 'Working…'}
+          <div role="status" className="self-start flex items-center gap-2 text-[13px] text-[var(--muted)]">
+            <Loader2 size={14} className="animate-spin" aria-hidden="true" /> {busyLabel || 'Working…'}
           </div>
         )}
       </div>
@@ -170,7 +173,7 @@ function AssistantPanel({ history, busy, busyLabel, working, onSend, onClose, pi
           <Send size={15} strokeWidth={1.5} />
         </button>
       </form>
-    </div>
+    </section>
   );
 }
 
@@ -383,7 +386,7 @@ export default function Dashboard({ id }) {
 
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-[var(--background)] text-[var(--text)]">
-      <div className="flex-1 overflow-y-auto">
+      <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto outline-none">
         <div className="max-w-[1400px] mx-auto px-6 py-5 flex flex-col gap-6">
           {/* Header */}
           <div className="flex items-center gap-3">
@@ -530,7 +533,7 @@ export default function Dashboard({ id }) {
             </div>
           )}
         </div>
-      </div>
+      </main>
 
       {gallery && (
         <Modal title="Add components" onClose={() => setGallery(null)} width="w-[560px]">

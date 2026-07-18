@@ -13,6 +13,7 @@ import ExportDashboardButton from './ExportDashboardButton';
 import Button from './ui/Button';
 import Modal from './ui/Modal';
 import { api } from '../lib/api';
+import { busyLabel as guessBusyLabel } from '../lib/intent';
 
 // ---------------------------------------------------------------------------
 // Dashboard assistant — chat panel that edits the dashboard in place
@@ -25,15 +26,10 @@ const SUGGESTIONS = [
   'Research this topic online and pin the findings',
 ];
 
-// Honest status copy driven by what the assistant is actually doing (Phase 0f):
-// a spinner that describes the wrong action is worse than no spinner.
-function guessBusyLabel(message) {
-  const m = (message || '').toLowerCase().trim();
-  if (/\b(research|search the web|online|latest news)\b/.test(m)) return 'Searching the web…';
-  const isQuestion = /\?$/.test(m) ||
-    /^(what|which|how|when|who|where|why|is |are |does |do |show me|tell me|average|total|sum|count|highest|lowest|compare)\b/.test(m);
-  return isQuestion ? 'Reading the data…' : 'Updating the dashboard…';
-}
+// Honest status copy is derived from `../lib/intent` (guessBusyLabel), which
+// mirrors the backend classify_intent so the spinner never names the wrong
+// action — e.g. "Updating the dashboard…" while the server is answering a
+// question. See lib/intent.test.js.
 
 // Show the working (Phase 0e): the executed query + the result the answer was
 // phrased from, collapsed by default. Transparency is the feature — if the user

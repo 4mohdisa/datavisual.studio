@@ -944,6 +944,60 @@ def _stock_total_override(message, spec, df, measures, time_col):
         return None
 
 
+_COUNT_WORDS = ("how many", "how much", "number of", "count of", "total number",
+                "in total", "altogether", "combined", "overall", "total")
+
+
+def _absent_group_total_gate(message, spec, result, df, time_col):
+    """Phase 3b — the deterministic ambiguity gate. When the user asks for a
+    SINGLE total/count and the model split the measure by a dimension the
+    question never named, collapse the group rows to the total they asked for
+    and attach the breakdown. This is why "how many customers in June" is 731
+    (all three plans), never one plan's 483 — regardless of whether the model
+    emits a stray group_by. Returns a patched result dict or None.
+
+    Sums only additive aggregations (sum/count) across a NON-time dimension;
+    summing a level across time is the stock-across-time bug and is left to the
+    stock guard (whose warning we defer to)."""
+    if df is None or not isinstance(spec, dict) or result.get("warning"):
+        return None
+    m = (message or "").lower()
+    if not any(w in m for w in _COUNT_WORDS):
+        return None
+    group_by = [str(g) for g in (spec.get("group_by") or [])]
+    agg = spec.get("agg") or {}
+    if not group_by or not isinstance(agg, dict) or not agg:
+        return None
+    # Respect an explicitly-requested breakdown: if the user named any split
+    # dimension ("... by plan"), leave the per-group rows alone.
+    if any(g.lower() in m for g in group_by):
+        return None
+    if time_col and time_col in group_by:
+        return None  # collapsing across time would double-count — not our job
+    col, func = next(iter(agg.items()))
+    if func not in ("sum", "count"):
+        return None  # mean/min/max/nunique aren't additive across groups
+    mcol = f"{col}_{func}"
+    rows = result.get("rows") or []
+    if len(rows) <= 1 or mcol not in (result.get("columns") or []):
+        return None
+    try:
+        total = float(sum(float(r[mcol]) for r in rows if r.get(mcol) is not None))
+    except (TypeError, ValueError):
+        return None
+    gcol = group_by[0]
+    parts = ", ".join(f"{r.get(gcol)}: {r.get(mcol):,.0f}"
+                      for r in rows if r.get(mcol) is not None)
+    patched = dict(result)
+    patched["corrected"] = round(total, 2)
+    patched["corrected_label"] = "the total"
+    patched["warning"] = (
+        f"The question asks for a single total but the result was split by "
+        f"‘{gcol}’, which the question didn’t name. The total across all {gcol} "
+        f"values is {total:,.0f} ({parts}). Lead with the total.")
+    return patched
+
+
 async def run_query_turn(
     message: str,
     dashboard: dict,
@@ -988,6 +1042,12 @@ async def run_query_turn(
     override = _stock_total_override(message, spec, df, measures, time_col)
     if override:
         result = override
+    else:
+        # Deterministic ambiguity gate: a total/count the model split by a
+        # dimension the user never named → collapse to the total + breakdown.
+        gated = _absent_group_total_gate(message, spec, result, df, time_col)
+        if gated:
+            result = gated
 
     warning, corrected = result.get("warning"), result.get("corrected")
     guard_note = ""

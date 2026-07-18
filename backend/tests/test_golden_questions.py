@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from backend.data_analysis import classify_measure
-from backend.dashboard import _stock_total_override, _infer_period
+from backend.dashboard import _stock_total_override, _absent_group_total_gate, _infer_period
 from backend.query import run_query_spec
 
 SAMPLE = os.path.join(os.path.dirname(__file__), "..", "samples", "saas_revenue.csv")
@@ -70,6 +70,34 @@ def test_customers_total_is_also_stock_corrected(df, measures):
     r = _stock_total_override("what is the total number of customers", {"agg": {"customers": "sum"}},
                               df, measures, "month")
     assert round(r["corrected"]) == 731
+
+
+def test_how_many_collapses_a_stray_group_by_to_the_total(df, measures):
+    # The 483-vs-731 bug: the model splits "how many customers in June" by plan
+    # it was never asked about. The gate must collapse to 731 (all plans), and
+    # keep the per-plan breakdown so the answer can show its working.
+    spec = {"filter": [{"column": "month", "op": "==", "value": "2026-06-01"}],
+            "group_by": ["plan"], "agg": {"customers": "sum"}}
+    result = run_query_spec(df, spec, measures=measures, time_col="month")
+    assert len(result["rows"]) == 3  # split by plan → 3 rows (483/207/41)
+    gated = _absent_group_total_gate("how many customers in June", spec, result, df, "month")
+    assert round(gated["corrected"]) == 731
+    assert "483" in gated["warning"] and "207" in gated["warning"]  # breakdown kept
+
+
+def test_gate_respects_an_explicitly_requested_breakdown(df, measures):
+    # "how many customers per plan" NAMES the split → do not collapse.
+    spec = {"group_by": ["plan"], "agg": {"customers": "sum"}}
+    result = run_query_spec(df, spec, measures=measures, time_col="month")
+    assert _absent_group_total_gate("how many customers per plan", spec, result, df, "month") is None
+
+
+def test_gate_never_collapses_across_time(df, measures):
+    # Splitting by the time column is the stock-across-time case — the gate must
+    # stay out of it (it would sum a level across 6 months = double counting).
+    spec = {"group_by": ["month"], "agg": {"customers": "sum"}}
+    result = run_query_spec(df, spec, measures=measures, time_col="month")
+    assert _absent_group_total_gate("how many customers in total", spec, result, df, "month") is None
 
 
 def test_unknown_column_is_an_error_not_a_guess(df, measures):

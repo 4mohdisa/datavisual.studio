@@ -48,6 +48,21 @@ smoke-split: ## Smoke the split host config (polling default + >5MB upload). Nee
 	@echo "pointed at a separate backend host, then: SPLIT=1 make smoke-split"
 	SPLIT=1 node scripts/smoke.mjs
 
+verify-deploy: ## Pre-deploy checklist, pass/fail per line (needs the stack running; set BASE=<url>)
+	@echo "== verify-deploy — full-stack checklist against $${BASE:-http://localhost:3000} =="
+	SPLIT=1 node scripts/smoke.mjs
+	@echo ""
+	@echo "== SECRET_KEY drill A: a backup restores AND encrypted keys decrypt with the SAME key =="
+	./scripts/restore-test.sh
+	@echo ""
+	@echo "== Owner-run — need prod credentials, can't run headless =="
+	@echo "  [ ] Clerk two-account walk: user B gets 404 on A's dashboard/dataset/export/status/share."
+	@echo "      Proven deterministically in backend/tests/test_api.py; run once live with prod Clerk keys."
+	@echo "  [ ] SECRET_KEY drill B: a FRESH key against an existing data/ must REFUSE to boot with the"
+	@echo "      explicit error (guard: backend/tests/test_boot_guards.py). Confirm on the real host."
+	@echo "  [ ] Pin replica/worker = 1 in the deploy config — locks, rate limiter and upload nonces are in-process."
+	@echo "  [ ] Backup cron installed BEFORE announcing — data/ is the only copy (make backup)."
+
 e2e: ## Browser e2e (Playwright; auto-starts servers, reuses if running)
 	cd frontend && npm run test:e2e
 

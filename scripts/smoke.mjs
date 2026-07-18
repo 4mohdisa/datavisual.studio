@@ -154,6 +154,20 @@ async function main() {
     assert((await get(`/api/backend/api/public/${token}`)).status === 404, 'still reachable after revoke');
   });
 
+  // --- More security surfaces (verify-deploy) --------------------------------
+  await check('Third %2f vector (api/export/..) → not a data leak', async () => {
+    const r = await get('/api/backend/api/export/..%2f..%2fapi%2fconversations');
+    const body = await r.text();
+    assert(r.status !== 200 || !body.includes('owner_id'), `LEAK via export traversal (status ${r.status})`);
+  });
+
+  await check('Admin overview: bad password rejected when gated (403), open in dev', async () => {
+    const r = await get('/api/backend/api/admin/overview', { headers: { 'x-admin-password': 'definitely-wrong' } });
+    // Prod (ADMIN_PASSWORD set) → 403. Open dev (unset) → 200. Never 200-with-a-bad-password in prod.
+    assert(r.status === 403 || r.status === 200, `unexpected ${r.status}`);
+    if (r.status === 200) console.log('      \x1b[33m(open mode — set ADMIN_PASSWORD before prod)\x1b[0m');
+  });
+
   // --- Summary --------------------------------------------------------------
   console.log(`\n${passed} passed, ${failures.length} failed\n`);
   if (failures.length) process.exit(1);

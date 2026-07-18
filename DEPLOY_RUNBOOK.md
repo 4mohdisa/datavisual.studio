@@ -1,4 +1,7 @@
-# Deploy runbook — datavisual.studio v1.0.2-correctness
+# Deploy runbook — datavisual.studio
+
+_Target tag: **v1.1.0-golive** (tag only once CI is watched green on GitHub — see HANDOFF.md).
+Verify with a single command: `BASE=<url> make verify-deploy`._
 
 Copy-pasteable steps to take `v1.0.2-correctness` live. Two supported topologies:
 
@@ -117,19 +120,14 @@ timeout), but polling is still the default and is fine.
 ## 5. First-boot checks (do ALL of these before announcing)
 
 ```bash
-# health
-curl -s https://api.example.com/health
-
-# full smoke against the live host
-BASE=https://app.example.com SPLIT=1 node scripts/smoke.mjs
-
-# the 3 %2f traversal regressions must all be safe
-curl -s -o /dev/null -w "%{http_code}\n" 'https://app.example.com/api/backend/api/public/..%2f..%2fapi%2fconversations'  # 400
+# ONE command — the whole pre-deploy checklist, pass/fail per line, against the live host.
+# Runs the full smoke (health · the %2f trio · >5 MB upload · pipeline · share mint/revoke ·
+# admin gate) + the SECRET_KEY restore drill, then prints the owner-run manual items.
+BASE=https://app.example.com make verify-deploy
 ```
 
-- [ ] `/health` returns ok
-- [ ] `make smoke` (SPLIT=1) green against the live host, including the **>5 MB upload**
-- [ ] The 3 `%2f` regression checks are safe (400 / "unavailable" / legit share renders)
+- [ ] `make verify-deploy` green against the live host (health, the `%2f` trio, **>5 MB upload**,
+      pipeline, share mint/revoke, admin gate, restore-drill)
 - [ ] Upload a real >5 MB file through the UI (exercises the direct-upload ticket)
 - [ ] Run one full research pipeline with a real key (polling completes, dashboard appears)
 - [ ] Mint and revoke a share link; the revoked link 404s

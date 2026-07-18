@@ -24,3 +24,11 @@ frontend/.env.local
 !frontend/.env.local.example
 # UI audit screenshots
 artifacts/
+
+# Working notes — recreated each session, kept OUT of the public repo (not out of
+# existence). Deleted from git in a cleanup; the convention is: keep them local.
+HANDOFF.md
+DECISIONS.md
+A11Y_AUDIT.md
+FEATURE_AUDIT.md
+scratch_*

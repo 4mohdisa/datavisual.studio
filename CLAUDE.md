@@ -206,6 +206,8 @@ state = the `data/` directory; back that up and you have everything.
 2. Verify any new model id against https://openrouter.ai/api/v1/models before
    adding — invalid ids 404 silently and drop out of the council.
 3. `data/` is gitignored: conversations, uploads, exports, settings.json, model cache.
+   `HANDOFF.md`, `DECISIONS.md`, `A11Y_AUDIT.md`, `FEATURE_AUDIT.md` are ALSO gitignored — working
+   notes, deliberately kept out of the public repo. Recreate them locally; never `git add` them.
 4. Charts carry a non-serialisable `dataframe` key in memory — strip before persisting.
 5. Metadata (label_to_model, aggregate_rankings) persists inside the report/pipeline,
    not as top-level conversation fields.

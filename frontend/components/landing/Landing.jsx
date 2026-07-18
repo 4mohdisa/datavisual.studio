@@ -2,7 +2,8 @@ import Link from 'next/link';
 import {
   LayoutDashboard, Telescope, Cable, RefreshCw, FileDown, ArrowRight,
   MessagesSquare, ShieldCheck, Database, Share2, Sliders, Table2,
-  Users, LineChart, Building2, FlaskConical, MousePointerClick, Star, Github,
+  Users, LineChart, Building2, FlaskConical, MousePointerClick, Star,
+  Calculator, KeyRound, Scale, HardDrive, Check,
 } from 'lucide-react';
 
 const REPO_URL = 'https://github.com/4mohdisa/datavisual.studio';
@@ -10,6 +11,43 @@ import Reveal from './Reveal';
 import HeroReplay from './HeroReplay';
 import Track from '../Track';
 import { LiveMonitorDemo, BuildDemo, ChatEditDemo, CouncilDemo } from './FeatureDemos';
+import ArchitectureDiagram from './ArchitectureDiagram';
+import { Stack, Row, Grid } from '../ui/layout';
+
+// The engineering decisions, written as reasoning — this is the portfolio
+// section. Each item leads with the decision, then WHY it was made that way.
+const DECISIONS = [
+  {
+    icon: Calculator,
+    title: 'The model never does arithmetic',
+    body: 'The LLM turns your question into a JSON query spec; a deterministic Python engine executes it and phrases the answer from the result. Nothing about a number is left to the model — so every figure the product shows can be defended, because a person or a test can re-derive it.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Numbers fail closed',
+    body: 'Every figure in an answer must appear in the computed result or be a derivation the answer shows its working for — otherwise it refuses rather than guess. A level like MRR is never summed across time; “total customers in June” aggregates across plans, not one of them.',
+  },
+  {
+    icon: KeyRound,
+    title: 'Your keys, never mine',
+    body: 'Users bring their own AI keys, encrypted at rest and resolved per request from the signed-in identity. The owner’s key is never spent on someone else’s request — so the product can be free without a metered bill in the middle.',
+  },
+  {
+    icon: Users,
+    title: 'A council, not one oracle',
+    body: 'For research, several models answer independently, review each other’s answers anonymously, and a chairman synthesises one cited report. No single model’s confidence is load-bearing, and a model that quietly drops out is surfaced, not hidden.',
+  },
+  {
+    icon: HardDrive,
+    title: 'No database, on purpose',
+    body: 'All state is JSON on disk. For a single-tenant, single-replica product that removes migrations, a connection pool and a second backup target — and makes the security model tractable: one directory is the trust boundary, one function is the id check.',
+  },
+  {
+    icon: Scale,
+    title: 'Accessible by construction',
+    body: 'Charts carry a text alternative generated from the plotted numbers (not the LLM) and a “view as table” toggle; overlays trap and restore focus; contrast meets WCAG AA. axe runs on every route in CI. The a11y is in the components, not bolted on after.',
+  },
+];
 
 const SECTION = 'max-w-[1120px] mx-auto px-6';
 
@@ -157,6 +195,48 @@ export default function Landing() {
         </div>
       </header>
 
+      {/* The problem — the gap the product exists to close */}
+      <section className="border-t border-[var(--border)] py-20">
+        <div className={`${SECTION} grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-10 lg:gap-16 items-center`}>
+          <Reveal>
+            <h2 className="text-[28px] lg:text-[32px] font-semibold m-0 tracking-tight text-balance">
+              A dashboard tells you what happened.<br className="hidden sm:block" />{' '}
+              <span className="text-[var(--muted)]">Nothing tells you what changed.</span>
+            </h2>
+            <p className="text-[15px] text-[var(--muted)] leading-relaxed mt-5 max-w-[520px]">
+              So you build the dashboard once, then re-check it by hand — reload the data, re-run the
+              same searches, try to remember last week’s numbers. The moment that actually matters —
+              the number that moved, the source that appeared — is the one you find out about late.
+            </p>
+            <p className="text-[15px] text-[var(--text)] leading-relaxed mt-4 max-w-[520px]">
+              datavisual.studio keeps your data <em className="not-italic font-medium">and</em> the live
+              web in sync behind one dashboard, and leads with the delta: what moved, by how much, and
+              what’s new — since the last time you looked.
+            </p>
+          </Reveal>
+          <Reveal delay={80}>
+            <Stack gap="sm" className="rounded-xl border border-[var(--border-2)] bg-[var(--raised)] p-5">
+              <div className="text-[11.5px] font-medium uppercase tracking-wide text-[var(--faint)]">Since your last visit</div>
+              <Row justify="between" className="text-[14px]">
+                <span className="text-[var(--muted)]">Revenue</span>
+                <span className="tabular-nums text-[var(--text)]">3.43M → 3.85M <span className="text-[#5ad08a]">▲ 12.4%</span></span>
+              </Row>
+              <Row justify="between" className="text-[14px]">
+                <span className="text-[var(--muted)]">Churn</span>
+                <span className="tabular-nums text-[var(--text)]">2.1% → 2.6% <span className="text-[#f0776a]">▲ 0.5pt</span></span>
+              </Row>
+              <Row justify="between" className="text-[14px]">
+                <span className="text-[var(--muted)]">Pinned research</span>
+                <span className="tabular-nums text-[var(--text)]">3 new sources</span>
+              </Row>
+              <div className="text-[12px] text-[var(--faint)] pt-1 border-t border-[var(--border)] mt-1">
+                Illustrative — this is what an <span className="text-[var(--muted)]">Update</span> surfaces.
+              </div>
+            </Stack>
+          </Reveal>
+        </div>
+      </section>
+
       {/* Feature showcase — alternating animated rows */}
       <section id="how" className="border-t border-[var(--border)] py-20">
         <div className={`${SECTION} mb-14`}>
@@ -293,6 +373,93 @@ export default function Landing() {
               <Step n="4" title="Becomes a dashboard">The findings, analytics and charts land on a live dashboard you keep editing and monitoring.</Step>
             </Reveal>
           </div>
+        </div>
+      </section>
+
+      {/* How it's built — the portfolio section: architecture + the reasoning */}
+      <section id="how-its-built" className="border-t border-[var(--border)] py-20">
+        <div className={SECTION}>
+          <Reveal>
+            <h2 className="text-[28px] lg:text-[32px] font-semibold m-0 mb-3 tracking-tight text-balance">How it’s built</h2>
+            <p className="text-[14.5px] text-[var(--muted)] leading-relaxed m-0 max-w-[620px]">
+              This one’s for the engineers. The interesting part of this product isn’t the feature list —
+              it’s the constraints it holds so the numbers can be trusted. A stranger’s browser talks to
+              a thin Next.js proxy, which is the only thing that reaches the FastAPI backend; all state is
+              JSON on disk.
+            </p>
+          </Reveal>
+
+          <Reveal delay={60} className="mt-10">
+            <ArchitectureDiagram />
+            <p className="text-[12.5px] text-[var(--faint)] mt-3 text-center lg:text-left">
+              <span className="font-mono text-[var(--muted)]">Next.js 16 · React 19</span> on Vercel ·{' '}
+              <span className="font-mono text-[var(--muted)]">FastAPI · pandas · Plotly</span> on AWS ·{' '}
+              Clerk for identity · <span className="font-mono text-[var(--muted)]">JSON</span> on disk. No database.
+            </p>
+          </Reveal>
+
+          <Reveal delay={80} className="mt-12">
+            <Grid cols={3} gap="lg">
+              {DECISIONS.map((d) => (
+                <div key={d.title}>
+                  <Row gap="sm" align="center" className="mb-2.5">
+                    <span className="shrink-0 grid place-items-center w-8 h-8 rounded-lg border border-[var(--border-2)] bg-[var(--raised)]">
+                      <d.icon size={16} strokeWidth={1.5} className="text-[var(--accent)]" />
+                    </span>
+                    <h3 className="text-[15px] font-semibold text-[var(--text)] m-0">{d.title}</h3>
+                  </Row>
+                  <p className="text-[13px] text-[var(--muted)] leading-relaxed m-0">{d.body}</p>
+                </div>
+              ))}
+            </Grid>
+          </Reveal>
+
+          <Reveal delay={100} className="mt-10">
+            <a
+              href={`${REPO_URL}/blob/main/ARCHITECTURE.md`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[13.5px] text-[var(--accent)] hover:underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] rounded"
+            >
+              Read the full architecture &amp; invariants <ArrowRight size={14} strokeWidth={1.5} />
+            </a>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* Pricing, plainly — free, with the real per-run cost named */}
+      <section id="pricing" className="border-t border-[var(--border)] py-20">
+        <div className={`${SECTION} max-w-[820px]`}>
+          <Reveal>
+            <h2 className="text-[28px] lg:text-[32px] font-semibold m-0 mb-3 tracking-tight text-balance">Pricing, plainly</h2>
+            <p className="text-[14.5px] text-[var(--muted)] leading-relaxed m-0 max-w-[600px]">
+              The app is <span className="text-[var(--text)] font-medium">free</span> and open source. You
+              bring your own AI key (OpenRouter, and optionally Google Gemini) and pay the provider
+              directly for what you run — there’s no markup and no bill from us. Rough real costs, so
+              money is never a surprise:
+            </p>
+          </Reveal>
+          <Reveal delay={70} className="mt-8">
+            <Grid cols={3} gap="md">
+              {[
+                { k: 'Build a dashboard', v: '$0', d: 'Charts, metrics and the table are computed deterministically — no AI call at all.' },
+                { k: 'Ask a question / edit', v: '~$0.001', d: 'One fast-model call to turn your words into a query spec. Fractions of a cent.' },
+                { k: 'A full research run', v: '~2–20¢', d: '3 web searches + a multi-model council. Depends entirely on the models you choose.' },
+              ].map((p) => (
+                <div key={p.k} className="rounded-xl border border-[var(--border-2)] bg-[var(--raised)] p-5">
+                  <div className="text-[13px] text-[var(--muted)]">{p.k}</div>
+                  <div className="text-[26px] font-semibold text-[var(--text)] tabular-nums mt-1">{p.v}</div>
+                  <p className="text-[12.5px] text-[var(--faint)] leading-relaxed mt-2 m-0">{p.d}</p>
+                </div>
+              ))}
+            </Grid>
+          </Reveal>
+          <Reveal delay={90} className="mt-6">
+            <Row gap="sm" align="center" className="text-[13px] text-[var(--muted)]">
+              <Check size={15} strokeWidth={2} className="text-[#5ad08a] shrink-0" />
+              No card, and no AI key, to start — the <Link href="/demo" className="text-[var(--accent)] hover:underline underline-offset-2">live demo</Link> needs neither.
+            </Row>
+          </Reveal>
         </div>
       </section>
 

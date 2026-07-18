@@ -109,7 +109,9 @@ export default function Sidebar({
   return (
     <div className="w-[280px] shrink-0 flex flex-col h-screen bg-[var(--background)] border-r border-[var(--border)]">
       <div className="p-4 border-b border-[var(--border)]">
-        <h1 className="text-lg font-semibold text-[var(--text)] m-0 mb-3">datavisual.studio</h1>
+        {/* Brand label, not a page heading — the page's <h1> lives in Home/Dashboard
+            (one <h1> per page). */}
+        <div className="text-lg font-semibold text-[var(--text)] mb-3">datavisual.studio</div>
         <button
           className={`w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-[0.2rem] font-medium text-sm transition-colors ${newChatClass}`}
           onClick={onNewConversation}

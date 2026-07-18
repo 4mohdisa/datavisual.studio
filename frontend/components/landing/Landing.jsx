@@ -121,11 +121,27 @@ const faqJsonLd = {
   })),
 };
 
+// HowTo structured data for the build-a-dashboard workflow (the "how you use it"
+// section) — keeps SoftwareApplication (layout) and FAQPage (above) alongside it.
+const howToJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'HowTo',
+  name: 'Build a living dashboard from your data',
+  description: 'Turn a file or database into an editable dashboard, then keep it in sync with your data and the live web.',
+  step: [
+    { '@type': 'HowToStep', position: 1, name: 'Bring data', text: 'Upload a CSV, Excel or JSON file, or connect a SQL database or REST API with a read-only query.' },
+    { '@type': 'HowToStep', position: 2, name: 'Generate', text: 'Pick a template — metrics, charts, comparison and a data table appear instantly, every widget rebuildable.' },
+    { '@type': 'HowToStep', position: 3, name: 'Refine', text: 'Edit by chat or by hand — add, change or remove widgets; the assistant applies your edits in place.' },
+    { '@type': 'HowToStep', position: 4, name: 'Monitor', text: 'Hit Update to re-pull the source and re-run pinned research, then see exactly what changed since last time.' },
+  ],
+};
+
 export default function Landing() {
   return (
     <div className="h-screen overflow-y-auto bg-[var(--background)] text-[var(--text)]">
       <Track event="landing_view" />
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqJsonLd) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(howToJsonLd) }} />
 
       {/* Nav */}
       <nav className="sticky top-0 z-40 border-b border-[var(--border)] bg-[oklch(0.12_0_0/0.8)] backdrop-blur">

@@ -11,26 +11,26 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
-  /* oklch dark palette (referenced via Tailwind arbitrary values, e.g. bg-[var(--background)]) */
-  --background: oklch(0.12 0 0);     /* main chat + sidebar surface */
-  --surface-input: oklch(0.17 0 0);  /* floating input bar */
-  --user-bubble: oklch(0.20 0 0);    /* user message bubble */
-  --active: oklch(0.18 0 0);         /* active conversation highlight */
-  --raised: oklch(0.16 0 0);         /* subtle raised panels (progress, aggregate) */
-  --border: oklch(0.22 0 0);         /* sidebar/chat separator + section dividers */
-  --border-2: oklch(0.25 0 0);       /* input bar + stronger borders */
-  --border-3: oklch(0.30 0 0);       /* control borders */
-  --text: oklch(0.92 0 0);           /* primary text */
-  /* Text greys use explicit sRGB hex (NOT oklch): older engines — including
-     Playwright's Chromium — render oklch achromatic greys noticeably darker,
-     which quietly drops small text below AA. Hex renders identically everywhere.
-     On --background (#060606): #9a9a9a ≈ 7:1, #8a8a8a ≈ 5.9:1. */
-  --muted: #9a9a9a;                  /* secondary text */
-  --faint: #8a8a8a;                  /* tertiary text */
+  /* Dark neutral palette. Written as explicit sRGB hex for ONE consistent,
+     portable format across the whole scale — each value is the exact sRGB of the
+     oklch(L 0 0) grey it replaced (e.g. oklch(0.12)=#060606), so the theme is
+     visually identical. (Contrast note: on --background #060606, --muted ≈ 7:1
+     and --faint ≈ 5.9:1 — both clear WCAG AA for small text.) */
+  --background: #060606;     /* main chat + sidebar surface  (oklch 0.12) */
+  --raised: #0d0d0d;         /* subtle raised panels          (oklch 0.16) */
+  --surface-input: #0f0f0f;  /* floating input bar            (oklch 0.17) */
+  --active: #121212;         /* active conversation highlight (oklch 0.18) */
+  --user-bubble: #161616;    /* user message bubble           (oklch 0.20) */
+  --border: #1b1b1b;         /* section dividers              (oklch 0.22) */
+  --border-2: #222222;       /* input bar + stronger borders  (oklch 0.25) */
+  --border-3: #2e2e2e;       /* control borders               (oklch 0.30) */
+  --faint: #8a8a8a;          /* tertiary text   (~5.9:1 on bg) */
+  --muted: #9a9a9a;          /* secondary text  (~7:1 on bg)   */
+  --new-chat-hover: #d7d7d7; /* button hover                  (oklch 0.88) */
+  --text: #e4e4e4;           /* primary text                  (oklch 0.92) */
+  --new-chat: #f8f8f8;       /* light button surface          (oklch 0.98) */
   --accent: #4a90e2;
   --danger: #e05555;
-  --new-chat: oklch(0.98 0 0);
-  --new-chat-hover: oklch(0.88 0 0);
 
   /* Semantic status + focus tokens (Phase 4a). Values chosen to clear WCAG AA
      on the dark surfaces above — status colours ≥4.5:1 as text on --background,

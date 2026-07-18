@@ -100,6 +100,29 @@ def test_conversation_list_scoped_to_owner(client, upload_csv):
     assert client.get("/api/conversations", headers=BOB).json() == []
 
 
+def test_non_owner_404_on_every_owner_scoped_endpoint(client, upload_csv):
+    """Phase 2c — B must get 404 on A's dataset, export, status and dashboard
+    chat, not just the record. One forgotten `_owned()` is a data leak."""
+    cid = _make_dashboard(client, upload_csv, headers=ALICE)
+    # sanity: A can reach them
+    assert client.get(f"/api/dataset/{cid}", headers=ALICE).status_code == 200
+    assert client.get(f"/api/conversations/{cid}/status", headers=ALICE).status_code == 200
+    # B is a stranger to all of them
+    assert client.get(f"/api/dataset/{cid}", headers=BOB).status_code == 404
+    assert client.get(f"/api/conversations/{cid}/status", headers=BOB).status_code == 404
+    assert client.get(f"/api/export/{cid}", headers=BOB, params={"format": "html"}).status_code == 404
+    assert client.post(f"/api/dashboard/{cid}/chat", json={"ops": []}, headers=BOB).status_code == 404
+
+
+def test_owner_share_link_opens_anonymously(client, upload_csv):
+    """A's share link is public-by-token — it must open with no identity at all
+    (the token IS the capability), while the record stays owner-scoped."""
+    cid = _make_dashboard(client, upload_csv, headers=ALICE)
+    token = client.post(f"/api/conversations/{cid}/share", headers=ALICE).json()["share_id"]
+    assert client.get(f"/api/public/{token}").status_code == 200        # anonymous, no headers
+    assert client.get(f"/api/conversations/{cid}", headers=BOB).status_code == 404  # record still scoped
+
+
 # --- admin password gate ------------------------------------------------------
 
 def test_admin_requires_password(client, monkeypatch):

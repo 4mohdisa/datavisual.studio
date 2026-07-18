@@ -26,7 +26,12 @@ const jsonLd = {
     'Public read-only share links',
     'PDF and HTML export',
   ],
-  author: { '@type': 'Person', name: 'Mohammed Isa', url: 'https://github.com/4mohdisa' },
+  author: {
+    '@type': 'Person',
+    name: 'Mohammed Isa',
+    url: 'https://isaxcode.com',
+    sameAs: ['https://github.com/4mohdisa'],
+  },
 };
 
 export default function LandingPage() {

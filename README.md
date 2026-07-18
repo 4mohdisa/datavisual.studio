@@ -4,7 +4,8 @@ Living dashboards and AI-researched reports from your data. Turn any dataset int
 an editable dashboard, then let a council of AI models research your question on the
 live web — and tell you **what changed** since last time. Free: bring your own AI keys.
 
-Built by [Mohammed Isa](https://github.com/4mohdisa) (mohdisa233@gmail.com)
+Built by [Mohammed Isa](https://isaxcode.com) ([@4mohdisa](https://github.com/4mohdisa)).
+If it's useful to you, please **⭐ [star the repo](https://github.com/4mohdisa/datavisual.studio)**.
 
 ## What it does
 
@@ -68,14 +69,39 @@ optional **Gemini** keys, saved from the sidebar **"AI keys"** panel. Keys are s
 privately with your account and only ever sent to the AI providers. In open dev mode
 (no Clerk), a global `OPENROUTER_API_KEY` in the backend `.env` is used as a fallback.
 
+## Architecture
+
+[ARCHITECTURE.md](ARCHITECTURE.md) is the map: the request path, where state lives, and the
+invariants that hold the security and correctness model together — starting with the one that
+matters most, **the LLM emits query specs and deterministic Python does the arithmetic**, so
+every number the product shows can be defended.
+
 ## Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) — Docker Compose or split backend/frontend hosting.
-Required prod env: `PROXY_SHARED_SECRET` (both sides), Clerk keys (frontend),
-`ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, and `NEXT_PUBLIC_SITE_URL` (SEO/canonical).
-PDF export + charts need Chromium/Chrome on the backend host (the Docker image
-installs it). See also [CLAUDE.md](CLAUDE.md) for the architecture map and
-technical notes, and [DEPLOY_RUNBOOK.md](DEPLOY_RUNBOOK.md) to go live.
+Docker Compose, or split backend/frontend hosting (Vercel ↔ AWS). Required prod env:
+`PROXY_SHARED_SECRET` (both sides), `SECRET_KEY` (encrypts stored keys — must travel with
+`data/`), Clerk keys (frontend), `ADMIN_PASSWORD`, `FRONTEND_ORIGIN`, and `NEXT_PUBLIC_SITE_URL`
+(SEO/canonical). PDF export + charts need Chromium/Chrome on the backend host (the Docker image
+installs it). Follow [DEPLOY_RUNBOOK.md](DEPLOY_RUNBOOK.md) to go live; see [CLAUDE.md](CLAUDE.md)
+for technical notes.
+
+## Known limitations
+
+Stated plainly — overclaiming is worse than a boundary:
+
+- **Single replica only.** Locks, the rate limiter and upload nonces are in-process; scaling out
+  needs them externalised first. Pin worker/replica = 1.
+- **`data/` is the only copy.** There is no hosted database holding a backup — a dead disk means
+  the data is gone. Install the backup cron *before* announcing.
+- **`SECRET_KEY` must travel with `data/`.** It decrypts stored API keys; a fresh key against a
+  restored `data/` makes every key unreadable, so the backend refuses to boot on that mismatch.
+- **Connector follow-ups.** SQLite/file DB URLs in the connector are a known local-file-read
+  follow-up; the SSRF guard has a narrow DNS-rebinding TOCTOU window (mitigate with IMDSv2).
+
+## Contributing & security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) (how to run it, the test bar, invariants not to break) and
+[SECURITY.md](SECURITY.md) (private vulnerability reporting).
 
 ## Tech stack
 
@@ -101,4 +127,4 @@ technical notes, and [DEPLOY_RUNBOOK.md](DEPLOY_RUNBOOK.md) to go live.
 
 ## 📄 License
 
-MIT © [Mohammed Isa](https://github.com/4mohdisa)
+[MIT](LICENSE) © [Mohammed Isa](https://isaxcode.com)

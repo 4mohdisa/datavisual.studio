@@ -21,9 +21,12 @@
   --border-2: oklch(0.25 0 0);       /* input bar + stronger borders */
   --border-3: oklch(0.30 0 0);       /* control borders */
   --text: oklch(0.92 0 0);           /* primary text */
-  --muted: oklch(0.68 0 0);          /* secondary text — AA (≥4.5:1) on every surface */
-  --faint: oklch(0.62 0 0);          /* tertiary text — bumped from 0.45 to clear AA on the
-                                        darkest surfaces (#060606/#0d0d0d); small text needs 4.5:1 */
+  /* Text greys use explicit sRGB hex (NOT oklch): older engines — including
+     Playwright's Chromium — render oklch achromatic greys noticeably darker,
+     which quietly drops small text below AA. Hex renders identically everywhere.
+     On --background (#060606): #9a9a9a ≈ 7:1, #8a8a8a ≈ 5.9:1. */
+  --muted: #9a9a9a;                  /* secondary text */
+  --faint: #8a8a8a;                  /* tertiary text */
   --accent: #4a90e2;
   --danger: #e05555;
   --new-chat: oklch(0.98 0 0);

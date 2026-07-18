@@ -2,8 +2,10 @@ import Link from 'next/link';
 import {
   LayoutDashboard, Telescope, Cable, RefreshCw, FileDown, ArrowRight,
   MessagesSquare, ShieldCheck, Database, Share2, Sliders, Table2,
-  Users, LineChart, Building2, FlaskConical, MousePointerClick,
+  Users, LineChart, Building2, FlaskConical, MousePointerClick, Star, Github,
 } from 'lucide-react';
+
+const REPO_URL = 'https://github.com/4mohdisa/datavisual.studio';
 import Reveal from './Reveal';
 import HeroReplay from './HeroReplay';
 import Track from '../Track';
@@ -346,10 +348,20 @@ export default function Landing() {
           <div className="flex flex-wrap items-center gap-4 pt-3 border-t border-[var(--border)]">
             <Link href="/privacy" className="hover:text-[var(--text)] transition">Privacy policy</Link>
             <Link href="/terms" className="hover:text-[var(--text)] transition">Terms of use</Link>
-            <span className="ml-auto">
+            <Link href="/about" className="hover:text-[var(--text)] transition">About</Link>
+            <a
+              href={REPO_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-[var(--border-2)] px-2.5 py-1 text-[var(--muted)] hover:text-[var(--text)] hover:border-[var(--border-3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--focus-ring)] transition"
+            >
+              <Star size={13} strokeWidth={1.5} /> Star on GitHub
+            </a>
+            <span>
               Built by{' '}
+              {/* Byline links the author's site, NOT the GitHub profile (the star button is the repo). */}
               <a
-                href="https://github.com/4mohdisa"
+                href="https://isaxcode.com"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[var(--muted)] hover:text-[var(--text)] underline underline-offset-2 transition"

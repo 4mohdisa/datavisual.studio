@@ -20,7 +20,7 @@ export default function LegalPage({ title, updated, children }) {
         </div>
       </nav>
 
-      <main className="max-w-[760px] mx-auto px-6 py-14 legal-content">
+      <main id="main-content" tabIndex={-1} className="max-w-[760px] mx-auto px-6 py-14 legal-content outline-none">
         <h1 className="text-[32px] font-semibold m-0 mb-2">{title}</h1>
         <p className="text-[12.5px] text-[var(--faint)] m-0 mb-10">Last updated: {updated}</p>
         {children}
@@ -30,10 +30,11 @@ export default function LegalPage({ title, updated, children }) {
         <div className="max-w-[760px] mx-auto px-6 flex flex-wrap items-center gap-4 text-[12px] text-[var(--faint)]">
           <Link href="/privacy" className="hover:text-[var(--text)] transition">Privacy policy</Link>
           <Link href="/terms" className="hover:text-[var(--text)] transition">Terms of use</Link>
+          <Link href="/about" className="hover:text-[var(--text)] transition">About</Link>
           <span className="ml-auto">
             Built by{' '}
             <a
-              href="https://github.com/4mohdisa"
+              href="https://isaxcode.com"
               target="_blank"
               rel="noopener noreferrer"
               className="text-[var(--muted)] hover:text-[var(--text)] underline underline-offset-2 transition"

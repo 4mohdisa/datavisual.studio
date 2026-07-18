@@ -17,7 +17,9 @@ test.describe('Marketing + legal', () => {
 
     // Footer legal links + author credit
     await expect(page.getByRole('link', { name: 'Privacy policy' }).first()).toBeVisible();
-    await expect(page.getByRole('link', { name: /Mohammed Isa/ })).toHaveAttribute('href', /github\.com\/4mohdisa/);
+    // Author byline links the author's site; the star button links the repo.
+    await expect(page.getByRole('link', { name: /Mohammed Isa/ })).toHaveAttribute('href', /isaxcode\.com/);
+    await expect(page.getByRole('link', { name: /Star on GitHub/i })).toHaveAttribute('href', /github\.com\/4mohdisa\/datavisual\.studio/);
   });
 
   test('no horizontal overflow on mobile', async ({ page }) => {

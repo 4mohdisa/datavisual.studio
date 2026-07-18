@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+// Emulate reduced motion so the page-transition fade-in (opacity 0→1) is
+// instant — otherwise axe can scan mid-animation and read every colour at
+// partial opacity over black, a transient false positive. It's also the more
+// representative scan: a reduced-motion user sees the settled page.
+test.use({ reducedMotion: 'reduce' });
+
 // Phase 4e — automated accessibility scan. Zero critical/serious violations on
 // every route we can reach without a live Clerk session (open dev mode). axe
 // can't judge keyboard flow or screen-reader sense — that's the manual pass in
@@ -9,6 +15,12 @@ import AxeBuilder from '@axe-core/playwright';
 const CSV = 'month,plan,customers\n2026-05,Starter,470\n2026-06,Starter,483\n2026-06,Pro,207\n2026-06,Enterprise,41\n';
 
 async function scan(page) {
+  // Wait for the page-transition fade (opacity 0→1) to finish — scanning
+  // mid-fade reads every colour at partial opacity over black (false positives).
+  await page.waitForFunction(() => {
+    const el = document.querySelector('.page-transition');
+    return !el || getComputedStyle(el).opacity === '1';
+  }, { timeout: 5000 }).catch(() => {});
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
     .analyze();
@@ -20,7 +32,7 @@ async function scan(page) {
   return serious;
 }
 
-for (const path of ['/', '/demo', '/studio']) {
+for (const path of ['/', '/about', '/demo', '/studio']) {
   test(`no serious axe violations: ${path}`, async ({ page }) => {
     await page.goto(path);
     await page.waitForLoadState('networkidle');

@@ -1125,7 +1125,7 @@ class DashboardChatRequest(BaseModel):
 async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, http_request: Request):
     """Edit the EXISTING dashboard in place — never rebuilds it. Returns the
     assistant reply plus the updated spec."""
-    from .dashboard import apply_ops, build_dashboard_spec, run_editor_turn, classify_intent, run_query_turn
+    from .dashboard import apply_ops, build_dashboard_spec, run_editor_turn, classify_intent, run_query_turn, run_meta_turn
 
     conv = _owned(conversation_id, http_request)
 
@@ -1156,44 +1156,60 @@ async def dashboard_chat(conversation_id: str, request: DashboardChatRequest, ht
     if request.ops:
         notes = await apply_ops(dashboard, request.ops, df, data_summary)
         reply = "Done." if not notes else "; ".join(notes)
-    elif request.message and request.message.strip():
-        msg = request.message.strip()
-        # Route by intent: questions are answered from a deterministic data query,
-        # edits emit ops, 'both' does both. This is the fix for the "asked a
-        # question, got nothing" bug — the editor prompt only knew how to edit.
-        intent = await classify_intent(msg)
+    else:
+        msg = (request.message or "").strip()
+        # Route by intent. 'meta' — a question ABOUT the dashboard/data/assistant,
+        # a greeting, or an empty message — is answered from context, NEVER the
+        # pandas query path. This is the go-live fix: "what is this about?" was
+        # classified 'question', hit query.py with nothing to select, and 500'd.
+        # 'question' → deterministic data query; 'edit' → ops; 'both' → both.
+        intent = "meta" if not msg else await classify_intent(msg)
         parts: list[str] = []
-        if intent in ("question", "both"):
-            q = await run_query_turn(msg, dashboard, data_summary, df)
-            if q.get("reply"):
-                parts.append(q["reply"])
-            pin_op = q.get("pin_op")
-            # Show the working (Phase 0e): the executed spec + a slice of the
-            # result table the answer was phrased from, so the user can see it.
-            _res = q.get("result") or {}
-            working = {
-                "spec": q.get("spec"),
-                "columns": _res.get("columns"),
-                "rows": (_res.get("rows") or [])[:10],
-                "row_count": _res.get("row_count"),
-                "warning": q.get("warning"),
-                "corrected": _res.get("corrected"),
-                "corrected_label": _res.get("corrected_label"),
-            }
-        if intent in ("edit", "both"):
-            parts.append(await run_editor_turn(msg, dashboard, data_summary, df))
+        try:
+            if intent == "meta":
+                parts.append((await run_meta_turn(msg, conv, dashboard, data_summary, df)).get("reply"))
+            else:
+                if intent in ("question", "both"):
+                    q = await run_query_turn(msg, dashboard, data_summary, df)
+                    if q.get("reply"):
+                        parts.append(q["reply"])
+                    pin_op = q.get("pin_op")
+                    # Show the working (Phase 0e): the executed spec + a slice of the
+                    # result table the answer was phrased from, so the user can see it.
+                    _res = q.get("result") or {}
+                    working = {
+                        "spec": q.get("spec"), "columns": _res.get("columns"),
+                        "rows": (_res.get("rows") or [])[:10], "row_count": _res.get("row_count"),
+                        "warning": q.get("warning"), "corrected": _res.get("corrected"),
+                        "corrected_label": _res.get("corrected_label"),
+                    }
+                if intent in ("edit", "both"):
+                    parts.append(await run_editor_turn(msg, dashboard, data_summary, df))
+        except Exception:
+            # No chat message may be a dead end (0d): degrade to a helpful reply,
+            # never a 500. The error path is logged when DEBUG is on.
+            if config.DEBUG:
+                import traceback as _tb
+                _tb.print_exc()
+            parts, pin_op, working = [], None, None
         answered = any(p for p in parts if p)
         reply = "\n\n".join(p for p in parts if p) or (
-            "I couldn't find an answer or an edit to make — try naming a column, or ask me to add a chart."
+            "I couldn't answer that one. Try asking about your data — e.g. a total or a top "
+            "value — or tell me to add a chart."
         )
+        # Append the turn to history ONCE, centrally — so every reply (meta, a
+        # question that degraded to a redirect, an edit, both, or the graceful
+        # fallback) lands in the history the UI renders, exactly once.
+        _hist = dashboard.setdefault("history", [])
+        _hist.append({"role": "user", "content": msg})
+        _hist.append({"role": "assistant", "content": reply})
+        del _hist[:-30]
         # Privacy: log intent + length, NOT the text — except when the answer was
         # empty, where the text is exactly the signal needed to fix the assistant.
         _track(http_request, "assistant_message", {
             "intent": intent, "len": len(msg),
             **({"empty": True, "text": msg[:200]} if not answered else {}),
         })
-    else:
-        raise HTTPException(status_code=400, detail="Provide a message or ops")
 
     # Persist under the per-conversation lock, re-reading the freshest record so
     # a concurrent write (e.g. a share mint) isn't clobbered. The async work

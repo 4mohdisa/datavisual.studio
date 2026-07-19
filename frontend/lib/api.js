@@ -125,7 +125,9 @@ export const api = {
     });
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || 'Dashboard edit failed');
+      // Neutral: this endpoint answers questions AND applies edits, so never
+      // report an "edit" failure for a question that failed.
+      throw new Error(err.detail || "The assistant couldn't respond. Please try again.");
     }
     return response.json();
   },

@@ -18,6 +18,7 @@ Spec shape (all keys optional):
 """
 
 import math
+from datetime import date, datetime
 from typing import Any, Optional
 
 import numpy as np
@@ -29,6 +30,11 @@ _MAX_ROWS = 100
 
 
 def _clean(v: Any) -> Any:
+    """Coerce a cell to a JSON-serializable primitive. Rows are later json.dumps'd
+    into the answer prompt, so a raw pandas Timestamp / numpy datetime here is a
+    hard 500 (the go-live bug: 'what is this about?' selected a datetime column)."""
+    if v is None or v is pd.NaT:
+        return None
     if isinstance(v, float):
         return None if (math.isnan(v) or math.isinf(v)) else round(v, 4)
     if isinstance(v, (np.integer,)):
@@ -36,6 +42,16 @@ def _clean(v: Any) -> Any:
     if isinstance(v, (np.floating,)):
         f = float(v)
         return None if (math.isnan(f) or math.isinf(f)) else round(f, 4)
+    if isinstance(v, np.bool_):
+        return bool(v)
+    # datetimes → ISO strings (covers pandas Timestamp, python datetime/date).
+    if isinstance(v, (pd.Timestamp, datetime, date)):
+        return v.isoformat()
+    if isinstance(v, np.datetime64):
+        ts = pd.Timestamp(v)
+        return None if pd.isna(ts) else ts.isoformat()
+    if isinstance(v, pd.Timedelta):
+        return str(v)
     return v
 
 

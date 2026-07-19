@@ -770,11 +770,8 @@ async def run_editor_turn(
     notes = await apply_ops(dashboard, ops, df, data_summary)
     if notes:
         reply = f"{reply}\n\nNotes: " + "; ".join(notes)
-
-    history = dashboard.setdefault("history", [])
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": reply})
-    del history[:-30]  # keep the last 30 turns
+    # History is appended once, centrally, by the /chat endpoint — so every reply
+    # (including early returns and combined 'both' turns) lands exactly once.
     return reply
 
 
@@ -791,28 +788,67 @@ _EDIT_NOUNS = ("chart", "metric", "pie", "bar", "graph", "widget", "table",
                "comparison", "donut", "histogram", "scatter", "heatmap", "line")
 
 
+# Messages ABOUT the dashboard / data / assistant, or plain conversation — these
+# are answered from context (run_meta_turn), never routed to the pandas query
+# path. Kept deliberately narrow so real data questions ("total revenue by
+# region") are NOT captured. This is the go-live fix: "what is this about?" was
+# classified 'question', hit query.py with nothing to select, and 500'd.
+_META_PHRASES = (
+    "what is this", "what's this", "whats this", "what is it", "what are these",
+    "what am i looking at", "what data", "what dataset", "what's on", "whats on",
+    "explain this", "explain the", "describe this", "summarise this", "summarize this",
+    "give me a summary", "tl;dr", "overview", "tell me about", "about this",
+    "what can you do", "what do you do", "what can i do", "what should i", "how does this",
+    "how do i", "how do you", "how to use", "walk me through", "who made", "who built",
+)
+_GREETINGS = {"hi", "hello", "hey", "yo", "help", "thanks", "thank you", "ok", "okay",
+              "hola", "good morning", "good afternoon", "good evening", "sup", "gm"}
+
+
+def _is_meta(m: str) -> bool:
+    """True for a message about the dashboard/data/assistant itself, a greeting,
+    or an empty / trivial message — answerable from context, no data query."""
+    m = (m or "").strip().lower()
+    if not m or set(m) <= set("?. !"):        # empty, or just punctuation like "?"
+        return True
+    if m in _GREETINGS or any(m.startswith(g + " ") or m == g for g in _GREETINGS):
+        return True
+    return any(p in m for p in _META_PHRASES)
+
+
 async def classify_intent(message: str) -> str:
-    """Return 'question' | 'edit' | 'both'. Keyword fast-path, LLM only when
-    the message is genuinely ambiguous."""
+    """Return 'meta' | 'question' | 'edit' | 'both'. Keyword fast-path; LLM only
+    when genuinely ambiguous between question and edit."""
     m = message.lower().strip()
+    if _is_meta(m):
+        return "meta"
     starts_edit = bool(re.match(r"^(add|remove|delete|rename|move|pin|make|create|put|drop|insert|update|set|build|change)\b", m))
     has_edit = starts_edit or any(n in m for n in _EDIT_NOUNS)
     starts_q = bool(re.match(r"^(what|which|how|why|when|who|is|are|does|do|list|tell|show me|give me)\b", m))
-    has_q = "?" in m or starts_q or bool(re.search(r"\b(average|highest|lowest|top|total|compare|biggest|smallest|most|least|mean|median|sum)\b", m))
+    has_q = "?" in m or starts_q or bool(re.search(r"\b(average|highest|lowest|top|total|compare|biggest|smallest|most|least|mean|median|sum|count|number of)\b", m))
     if has_edit and has_q:
         return "both"
     if has_edit:
         return "edit"
     if has_q:
         return "question"
-    # Ambiguous → one small LLM call.
+    # Ambiguous → one small LLM call (question / edit / both / meta).
     from .openrouter import query_model
     resp = await query_model(get_fast_model(), [{"role": "user", "content": (
-        "Classify this dashboard-assistant message as exactly one word: question, edit, or both. "
-        "question = asks about the data; edit = changes the dashboard; both = does both.\n"
+        "Classify this dashboard-assistant message as exactly one word: question, edit, both, or meta. "
+        "question = asks about the data; edit = changes the dashboard; both = does both; "
+        "meta = greeting, small talk, or a question about the dashboard/assistant itself.\n"
         f"Message: {message!r}\nReply with only the word.")}], max_tokens=8)
     w = ((resp or {}).get("content") or "").strip().lower()
-    return "both" if "both" in w else "edit" if "edit" in w else "question"
+    if "meta" in w:
+        return "meta"
+    if "both" in w:
+        return "both"
+    if "edit" in w:
+        return "edit"
+    # No key / unclear → treat as a question; run_query_turn degrades to a helpful
+    # redirect (it never dead-ends), so this is a safe default.
+    return "question"
 
 
 def _schema_context(data_summary: Optional[dict], df: Optional[pd.DataFrame]) -> str:
@@ -998,6 +1034,107 @@ def _absent_group_total_gate(message, spec, result, df, time_col):
     return patched
 
 
+_CAPABILITIES = (
+    "I'm this dashboard's assistant. I can:\n"
+    "• **Answer questions about your data** — e.g. “highest revenue month”, “total units”, “revenue by region”.\n"
+    "• **Edit the dashboard** — “add a bar chart of revenue by region”, “remove the pie chart”, “add a total metric”.\n"
+    "• **Research online and pin the findings** — “research this market and pin the sources”.\n"
+    "Just tell me what you want in plain language."
+)
+
+
+def _meta_facts(conv: dict, dashboard: dict, data_summary: Optional[dict], df: Optional[pd.DataFrame]) -> str:
+    """Plain-language facts about this record, from context the backend already
+    holds — no LLM, no query. Every meta answer is built from this."""
+    title = (dashboard or {}).get("title") or (conv or {}).get("title") or "This dashboard"
+    widgets = (dashboard or {}).get("widgets") or []
+    charts = [w.get("title") for w in widgets if w.get("kind") == "chart" and w.get("title")]
+    n_metrics = sum(1 for w in widgets if w.get("kind") == "metric")
+    n_insights = sum(1 for w in widgets if w.get("kind") == "insight")
+    has_table = any(w.get("kind") == "table" for w in widgets)
+
+    cols = [c.get("name") for c in ((data_summary or {}).get("columns") or []) if c.get("name")]
+    row_count = (data_summary or {}).get("row_count")
+    if row_count is None and df is not None:
+        row_count = len(df)
+
+    pipeline = (conv or {}).get("pipeline") or {}
+    has_report = bool(pipeline.get("report"))
+    question = (conv or {}).get("question") or pipeline.get("question")
+
+    lines = []
+    if has_report and question:
+        lines.append(f"**{title}** is an AI-researched report answering: “{question}”.")
+    elif has_report:
+        lines.append(f"**{title}** is an AI-researched report.")
+    else:
+        lines.append(f"**{title}** is a dashboard built from your data.")
+
+    if cols:
+        shown = ", ".join(cols[:8]) + ("…" if len(cols) > 8 else "")
+        rc = f"{row_count:,} rows" if isinstance(row_count, int) else "your dataset"
+        lines.append(f"The data has {len(cols)} columns ({shown}) across {rc}.")
+    elif df is None and not has_report:
+        lines.append("No dataset is attached yet — upload a file or connect a source to build charts.")
+
+    bits = []
+    if charts:
+        bits.append(f"{len(charts)} chart{'s' if len(charts) != 1 else ''} (" + ", ".join(charts[:4]) + ")")
+    if n_metrics:
+        bits.append(f"{n_metrics} metric{'s' if n_metrics != 1 else ''}")
+    if n_insights:
+        bits.append(f"{n_insights} research insight{'s' if n_insights != 1 else ''}")
+    if has_table:
+        bits.append("a data table")
+    if bits:
+        lines.append("On it: " + ", ".join(bits) + ".")
+    return "\n".join(lines)
+
+
+async def run_meta_turn(message: str, conv: dict, dashboard: dict,
+                        data_summary: Optional[dict], df: Optional[pd.DataFrame]) -> dict:
+    """Answer a question ABOUT the dashboard/data/assistant, a greeting, or an
+    empty message — from context, with NO query spec and NO pandas (the go-live
+    fix for the 'what is this about?' 500). Deterministic and works with no AI
+    key; when a key is present the facts are phrased more naturally."""
+    m = (message or "").strip().lower()
+    facts = _meta_facts(conv, dashboard, data_summary, df)
+
+    # A bare word that names a column → describe that column.
+    cols = {str(c.get("name")): c for c in ((data_summary or {}).get("columns") or []) if c.get("name")}
+    match = next((c for k, c in cols.items() if k.lower() == m), None) if m else None
+    if match:
+        kind = match.get("measure") or match.get("type") or "column"
+        reply = (f"“{match.get('name')}” is a {kind} column in your data. Ask me something like "
+                 f"“highest {match.get('name')}” or “total {match.get('name')} by …”, or tell me "
+                 f"to add a chart of it.")
+    elif any(p in m for p in ("help", "what can you do", "what do you do", "what can i do",
+                              "how do i", "how does this", "how to use", "walk me through")):
+        reply = _CAPABILITIES
+    elif not m or set(m) <= set("?. !"):
+        reply = "Ask me anything about your data, or tell me what to add.\n\n" + facts
+    elif m in _GREETINGS or any(m.startswith(g + " ") or m == g for g in _GREETINGS):
+        reply = "Hi! " + facts + "\n\nAsk me about the data (a total, a top value…), or tell me to add a chart."
+    else:  # what-is-this / explain / summarise / describe / overview / who-built …
+        reply = facts + "\n\nAsk me anything about it, or tell me what to add."
+
+    # If a key is available, let the model phrase the facts naturally — but only
+    # from the facts, and always fall back to the deterministic reply.
+    from .config import get_api_key
+    if get_api_key():
+        from .openrouter import query_model
+        resp = await query_model(get_fast_model(), [{"role": "user", "content": (
+            "You are a friendly data-dashboard assistant. Answer the user's message in 1–3 short "
+            "sentences using ONLY the facts below — never invent data or numbers not shown. If they "
+            "greet you or ask what you can do, be welcoming and mention an example they could try.\n\n"
+            f"Facts about this dashboard:\n{facts}\n\nWhat you can do:\n{_CAPABILITIES}\n\n"
+            f"User message: {message!r}\nYour reply:")}], max_tokens=220)
+        phrased = ((resp or {}).get("content") or "").strip()
+        if phrased:
+            reply = phrased
+    return {"reply": reply}
+
+
 async def run_query_turn(
     message: str,
     dashboard: dict,
@@ -1081,10 +1218,7 @@ async def run_query_turn(
         ok2, _ = check_answer(message, reply2, result, data_period=data_period) if reply2 else (False, "")
         reply = reply2 if ok2 else _safe_answer(result, reason)
 
-    history = dashboard.setdefault("history", [])
-    history.append({"role": "user", "content": message})
-    history.append({"role": "assistant", "content": reply})
-    del history[:-30]
+    # History is appended once, centrally, by the /chat endpoint.
     return {"reply": reply, "result": result, "spec": spec,
             "warning": warning, "pin_op": spec_to_widget_op(spec)}
 

@@ -284,7 +284,7 @@ export default function Dashboard({ id }) {
         ...prev,
         dashboard: {
           ...prev.dashboard,
-          history: [...(prev.dashboard?.history || []), { role: 'assistant', content: e.message || 'Edit failed.' }],
+          history: [...(prev.dashboard?.history || []), { role: 'assistant', content: e.message || "Sorry — I couldn't respond. Please try again." }],
         },
       } : prev);
     } finally {

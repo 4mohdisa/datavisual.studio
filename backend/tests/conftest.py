@@ -5,6 +5,7 @@ the suite never touches the real `data/` and is fully hermetic and repeatable.
 import sys
 from pathlib import Path
 
+import httpx
 import pandas as pd
 import pytest
 
@@ -62,6 +63,46 @@ def isolated_data(tmp_path, monkeypatch):
     # Rate limiting off in tests — the suite makes many rapid calls from one IP.
     main._rate_limiter.enabled = False
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def hermetic_no_outbound(monkeypatch):
+    """No test may reach a real model or make a real outbound HTTP call — no matter
+    what the repo-root `.env` holds (it leaks OPENROUTER_API_KEY into os.environ
+    past the delenv above, so `conftest` cannot rely on the key being absent).
+
+    `query_model` / `query_gemini` return None (the no-key path every handler
+    degrades from gracefully), so results are deterministic; any raw outbound POST
+    (key validation, or a path that bypasses those) raises LOUDLY. The proof: run
+    the whole suite with `.env` present — nothing changes. If a result depends on a
+    live model, it was never a test.
+
+    Opt back in for a specific test with the `real_llm` fixture (below), or patch
+    `backend.openrouter.query_model` to a canned response inside the test itself."""
+    async def _no_model(*_a, **_k):
+        return None
+    monkeypatch.setattr("backend.openrouter.query_model", _no_model, raising=False)
+    monkeypatch.setattr("backend.gemini.query_gemini", _no_model, raising=False)
+
+    async def _blocked_post(_self, url, *_a, **_k):
+        raise RuntimeError(
+            f"HERMETIC TEST tried a real outbound HTTP POST to {url!r}. Stub the model "
+            "call (backend.openrouter.query_model) explicitly instead of hitting the network."
+        )
+    # TestClient drives the app via a sync httpx.Client + ASGITransport, so patching
+    # the ASYNC client's .post blocks only the app's own outbound calls, not the tests.
+    monkeypatch.setattr(httpx.AsyncClient, "post", _blocked_post, raising=False)
+
+
+@pytest.fixture
+def real_llm(monkeypatch):
+    """Escape hatch: undo the hermetic model stub for a test that deliberately
+    supplies its own query_model (e.g. `monkeypatch.setattr(..., canned)`). Rarely
+    needed — most tests should assert the deterministic engine, not a live model."""
+    import backend.openrouter as _or
+    # Nothing to restore here beyond what the test sets; this fixture exists so the
+    # intent ("this test manages its own model stub") is explicit and greppable.
+    return _or
 
 
 @pytest.fixture

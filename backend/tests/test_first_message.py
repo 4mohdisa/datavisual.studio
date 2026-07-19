@@ -32,14 +32,10 @@ _HARD_ERROR = ("internal server error", "traceback", "edit failed",
                "not json serializable", "none of the")
 
 
-@pytest.fixture(autouse=True)
-def no_llm(monkeypatch):
-    """Force the no-AI-key path so these tests are hermetic and deterministic
-    (this is exactly the CI condition). The meta handler must still answer from
-    context; the query path must degrade to a helpful redirect, never a 500."""
-    async def _none(*a, **k):
-        return None
-    monkeypatch.setattr("backend.openrouter.query_model", _none)
+# The no-AI-key path (query_model → None) is now enforced globally by the
+# `hermetic_no_outbound` autouse fixture in conftest.py, so these tests need no
+# per-file stub. The meta handler must still answer from context; the query path
+# must degrade to a helpful redirect, never a 500.
 
 
 def _make_dashboard(client):

@@ -10,6 +10,7 @@ import json
 import asyncio
 import os
 import re
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -86,18 +87,27 @@ def _assert_identity_trust_safe() -> None:
     """Boot guard (Phase 0g). The backend trusts `x-clerk-user-id` from the
     proxy to scope every user's data. Without PROXY_SHARED_SECRET the
     proxy-secret guard is a no-op, so anyone who can reach the backend could
-    forge that header and impersonate any user. In a deployed environment
-    (FRONTEND_ORIGIN set) refuse to start rather than trust the internet's idea
-    of who the caller is. docker-compose already requires the secret; this
-    catches a direct/bare run that skipped it."""
-    if os.getenv("FRONTEND_ORIGIN") and not os.getenv("PROXY_SHARED_SECRET"):
+    forge that header and impersonate any user. In a deployed environment refuse
+    to start rather than trust the internet's idea of who the caller is.
+    docker-compose already requires the secret; this catches a direct/bare run
+    that skipped it. The deploy marker is FRONTEND_ORIGIN *or* ALLOWED_ORIGINS —
+    the CORS block tells operators to set ALLOWED_ORIGINS in prod, so a deploy
+    configured only that way must trip the guard too, not slip it."""
+    if (os.getenv("FRONTEND_ORIGIN") or os.getenv("ALLOWED_ORIGINS")) and not os.getenv("PROXY_SHARED_SECRET"):
         raise RuntimeError(
-            "PROXY_SHARED_SECRET is required in production. FRONTEND_ORIGIN is set "
-            "(a deployed environment) but PROXY_SHARED_SECRET is not — the backend "
-            "would trust a forgeable X-Clerk-User-Id header from anyone and allow "
-            "user impersonation. Generate one (`openssl rand -hex 32`) and set it "
-            "identically on the backend and the Next proxy, then restart."
+            "PROXY_SHARED_SECRET is required in production. A deployed environment "
+            "(FRONTEND_ORIGIN or ALLOWED_ORIGINS is set) is missing PROXY_SHARED_SECRET "
+            "— the backend would trust a forgeable X-Clerk-User-Id header from anyone "
+            "and allow user impersonation. Generate one (`openssl rand -hex 32`) and set "
+            "it identically on the backend and the Next proxy, then restart."
         )
+    # A real prod posture (proxy secret present) must also resolve SECRET_KEY at
+    # BOOT, not lazily on the first key-save. get_secret_key() raises in that
+    # posture when it's missing, so a fresh deploy fails fast here with guidance
+    # instead of 500-ing the first user who saves a key.
+    if os.getenv("PROXY_SHARED_SECRET"):
+        from .crypto import get_secret_key
+        get_secret_key()
 
 
 @asynccontextmanager
@@ -171,7 +181,9 @@ async def _proxy_secret_guard(request: Request, call_next):
     # no proxy secret (it never goes through the proxy) and is gated by its own
     # HMAC upload ticket instead.
     if secret and request.url.path.startswith("/api") and request.url.path != "/api/upload-direct":
-        if request.headers.get("x-proxy-secret") != secret:
+        # Constant-time compare, like the admin password and upload-ticket HMAC —
+        # this is the trust boundary the whole deploy hinges on.
+        if not secrets.compare_digest(request.headers.get("x-proxy-secret") or "", secret):
             return JSONResponse({"detail": "Forbidden"}, status_code=403)
     # Bind the request identity for the whole call tree (incl. SSE generators),
     # so per-user AI keys resolve inside every deep LLM call.
@@ -506,8 +518,6 @@ async def validate_account_key(request: AccountSettingsRequest, http_request: Re
 # ---------------------------------------------------------------------------
 
 def _require_admin(http_request: Request) -> None:
-    import secrets
-
     password = os.getenv("ADMIN_PASSWORD", "")
     if not password:
         if user_from_request(http_request) is None:

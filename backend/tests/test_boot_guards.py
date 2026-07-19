@@ -57,8 +57,30 @@ def test_identity_guard_ok_with_secret(monkeypatch):
 
 def test_identity_guard_ok_in_local_dev(monkeypatch):
     monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
     monkeypatch.delenv("PROXY_SHARED_SECRET", raising=False)
     main._assert_identity_trust_safe()  # no deploy marker → open dev is fine
+
+
+def test_identity_guard_refuses_open_prod_via_allowed_origins(monkeypatch):
+    # The CORS block tells operators to set ALLOWED_ORIGINS in prod ("it fully
+    # replaces the dev defaults"), so it must count as a deploy marker too — not
+    # only FRONTEND_ORIGIN. Otherwise a comment-following operator slips the net.
+    monkeypatch.delenv("FRONTEND_ORIGIN", raising=False)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://datavisual.studio")
+    monkeypatch.delenv("PROXY_SHARED_SECRET", raising=False)
+    with pytest.raises(RuntimeError, match="PROXY_SHARED_SECRET"):
+        main._assert_identity_trust_safe()
+
+
+def test_boot_refuses_missing_secret_key_in_prod(monkeypatch):
+    # A real prod posture (proxy secret set) with no SECRET_KEY must fail at
+    # BOOT, not lazily on the first key-save (which would 500 a live user).
+    monkeypatch.setenv("PROXY_SHARED_SECRET", "s")
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    crypto._secret_cache = None
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        main._assert_identity_trust_safe()
 
 
 # --- 0g: forged identity header is refused at the proxy-secret guard --------

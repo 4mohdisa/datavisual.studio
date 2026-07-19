@@ -11,8 +11,18 @@ services:
       - ./data:/app/data
     environment:
       - PROXY_SHARED_SECRET=${PROXY_SHARED_SECRET:?set in .env}
+      # REQUIRED: encrypts users' API keys at rest (Fernet). The backend refuses
+      # to start when PROXY_SHARED_SECRET is set but this isn't — and it must be
+      # the SAME value across restarts, or every stored key becomes unreadable.
+      # It lives with data/ (the volume below); back them up together.
+      - SECRET_KEY=${SECRET_KEY:?set in .env — openssl rand -hex 32, and keep it with data/}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
+      # Prod: your exact app origin(s), comma-separated, NO wildcard. When set it
+      # replaces the localhost dev defaults. Must match TRUSTED_PROXY_HOPS to your
+      # real reverse-proxy chain (reverse proxy + Cloudflare if present).
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
     restart: unless-stopped
 
   frontend:
@@ -20,6 +30,10 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        # For the real two-origin (Vercel↔AWS) shape: the backend's PUBLIC https
+        # origin, so the browser uploads >4.5MB files straight to it (HMAC ticket).
+        # Leave empty for single-box (uploads go through the same-origin proxy).
+        NEXT_PUBLIC_BACKEND_ORIGIN: ${NEXT_PUBLIC_BACKEND_ORIGIN:-}
     ports:
       - "3000:3000"
     environment:

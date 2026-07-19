@@ -58,7 +58,7 @@ openssl rand -hex 24   # → ADMIN_PASSWORD
 ## 3A. Backend on AWS (split)
 
 ```bash
-git clone <repo> && cd datavisual.studio && git checkout v1.0.2-correctness
+git clone <repo> && cd datavisual.studio && git checkout v1.1.0-golive   # or `main` until it's tagged
 cp .env.example .env
 # set in .env: PROXY_SHARED_SECRET, SECRET_KEY, ADMIN_PASSWORD, FRONTEND_ORIGIN=https://<your-vercel-domain>
 # optional: ALLOWED_ORIGINS=https://app.example.com,https://www.example.com  — CORS allowlist; when set it
@@ -89,6 +89,56 @@ WantedBy=multi-user.target
   **direct upload** (needed for >4.5 MB files on Vercel). Expose only the paths the browser needs;
   everything else is already gated by `PROXY_SHARED_SECRET`.
 - The backend origin the browser hits becomes `NEXT_PUBLIC_BACKEND_ORIGIN` on Vercel (step 4A).
+- **Prefer `docker compose` over the bare `uv`+systemd path above** — the backend image installs
+  Chromium (the fiddliest dependency) for you. `docker-compose.yml` now requires `SECRET_KEY` and
+  wires `ALLOWED_ORIGINS` / `TRUSTED_PROXY_HOPS` / `NEXT_PUBLIC_BACKEND_ORIGIN`. To update: `git pull &&
+  docker compose up -d --build`. The `./data` volume survives the rebuild.
+
+## 3A-mem. There is NO database to install
+
+`sqlalchemy`, `psycopg2-binary` and `pymysql` are in the backend dependencies **only for the
+user-facing data connectors** — so a *user* can import a table from *their own* Postgres/MySQL/SQLite.
+**They are not this application's storage.** All app state is JSON files under `data/`. Do **not**
+provision, install, or point the backend at any database server — there is nothing to configure. Back
+up `data/` and you have everything. (An app-owned Postgres is a separate, later project; it changes
+nothing here.)
+
+## 3A-oom. Memory headroom — measured, because an OOM kill is the likeliest failure
+
+The instance already runs another app and has needed swap; this backend imports pandas/plotly and
+spawns Chromium for PDF export. Measured resident memory (portable across hosts — same process, same
+footprint):
+
+| State | Resident | Notes |
+|---|---|---|
+| Backend idle | **~85 MB** | FastAPI; the heavy ML libs are lazy-imported |
+| After normal use | ~130 MB | pandas + plotly resident |
+| + a prediction run | ~+65 MB | scikit-learn + xgboost load only for ratings data (~200 MB total) |
+| **PDF export (peak)** | **~480 MB** | backend ~135 MB **+ headless Chromium ~345 MB**, transient, freed after |
+
+**Verdict:** steady state is small (~130–200 MB). The spike is a **PDF export: plan for ~500 MB of
+transient headroom.** With **worker = 1** only one export runs at a time, so the peak doesn't multiply
+— but on a box that's already busy, a ~350 MB Chromium burst is exactly what triggers OOM.
+
+- **If free memory (with the other app running) is under ~600 MB, do NOT deploy here** without either a
+  **swap file sized ≥1 GB** to absorb the transient Chromium spike, or a **larger / separate instance.**
+  A deploy that works until someone exports a PDF is not a deploy.
+- Confirm on the real box before inviting anyone: `free -m` with the other app running, then export a
+  PDF while watching `while sleep 1; do free -m | awk 'NR==2{print $4" MB free"}'; done`.
+
+## 3A-net. Reachability, TLS, the proxy chain, IMDSv2
+
+- **Do not expose port 8001 to the internet** in the security group — let the TLS reverse proxy front
+  it. The backend already 403s any request without `PROXY_SHARED_SECRET`, but the SG is the first wall.
+- **`ALLOWED_ORIGINS` = your exact Vercel app origin(s), no wildcard.** When set it replaces the
+  localhost defaults, so prod never trusts localhost.
+- **`PROXY_SHARED_SECRET` identical on both halves** (backend `.env` and Vercel). Without it a
+  publicly-reachable backend could be called directly with a forged identity header.
+- **`TRUSTED_PROXY_HOPS` must equal the real chain** (reverse proxy = 1; + Cloudflare = 2). The rate
+  limiter reads the client IP that many hops into `X-Forwarded-For`. Too low → a spoofed header bypasses
+  the limiter; too high → everyone is throttled as one client. Verify against the actual chain.
+- **Enforce IMDSv2** on the instance (`aws ec2 modify-instance-metadata-options --http-tokens required
+  --http-endpoint enabled`) — defence in depth alongside the SSRF egress guard; the two are independent.
 
 ## 4A. Frontend on Vercel (split)
 

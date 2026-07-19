@@ -9,6 +9,10 @@ RUN npm ci
 COPY . .
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# Two-origin split: the backend's public origin, inlined at build so the browser
+# can upload large files straight to it. Empty → single-box (proxied uploads).
+ARG NEXT_PUBLIC_BACKEND_ORIGIN
+ENV NEXT_PUBLIC_BACKEND_ORIGIN=$NEXT_PUBLIC_BACKEND_ORIGIN
 # Emit the standalone server bundle (next.config gates this on DOCKER_BUILD).
 ENV DOCKER_BUILD=1
 RUN npm run build

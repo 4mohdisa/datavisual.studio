@@ -112,6 +112,11 @@ def test_non_owner_404_on_every_owner_scoped_endpoint(client, upload_csv):
     assert client.get(f"/api/conversations/{cid}/status", headers=BOB).status_code == 404
     assert client.get(f"/api/export/{cid}", headers=BOB, params={"format": "html"}).status_code == 404
     assert client.post(f"/api/dashboard/{cid}/chat", json={"ops": []}, headers=BOB).status_code == 404
+    # The remaining owner-scoped endpoints the audit flagged as untested (all
+    # route through _owned()): suggestions, sync, reanalyse. A stranger sees 404.
+    assert client.get(f"/api/dashboard/{cid}/suggestions", headers=BOB).status_code == 404
+    assert client.post(f"/api/dashboard/{cid}/sync", headers=BOB).status_code == 404
+    assert client.post("/api/reanalyse", json={"conversation_id": cid, "filters": {}}, headers=BOB).status_code == 404
 
 
 def test_owner_share_link_opens_anonymously(client, upload_csv):

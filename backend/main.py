@@ -647,14 +647,20 @@ async def create_conversation_with_id(request: CreateConversationWithIdRequest, 
 
 
 # Progress percentage for each pipeline stage (Part 2b).
+# The pipeline persists current_stage under two naming schemes that both reach
+# the status poller: underscore keys (update_conversation_status) and the human
+# labels _advance() emits. Map BOTH so the bar never drops to 0% mid-run
+# (aliases share the percent of their canonical stage → progress stays monotonic).
 _PROGRESS_PCT = {
     "pending": 0,
-    "data_analysis": 15,
-    "research": 30,
-    "council_stage1": 50,
-    "council_stage2": 65,
-    "council_stage3": 80,
-    "synthesis": 90,
+    "initialising": 5,
+    "data_analysis": 15, "data analysis": 15,
+    "research": 30, "internet research": 30,
+    "prediction engine": 45,
+    "council_stage1": 50, "stage 1": 50,
+    "council_stage2": 65, "stage 2": 65,
+    "council_stage3": 80, "stage 3": 80,
+    "synthesis": 90, "report": 90,
     "done": 100,
     "complete": 100,
 }

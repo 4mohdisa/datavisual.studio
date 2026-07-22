@@ -1034,6 +1034,103 @@ def _absent_group_total_gate(message, spec, result, df, time_col):
     return patched
 
 
+_GROWTH_WORDS = ("grew", "grow", "grown", "growing", "growth", "increased", "increase",
+                 "rose", "rising", "gained", "declined", "decline", "dropped", "fell",
+                 "shrank", "shrunk", "fastest-growing", "fastest growing")
+
+
+def _growth_override(message, spec, df, measures, time_col):
+    """Deterministic period-over-period growth per group — the leashed answer to
+    'which plan grew fastest'. Computes, IN PANDAS, each group's measure at the
+    first vs last period and ranks by absolute change; the model only phrases the
+    result. Returns a result dict (with a 'growth' key so the phrasing is
+    growth-aware) or None when it isn't a growth question or the data can't
+    support one (no time axis, no group, no numeric measure)."""
+    if df is None or not time_col or time_col not in getattr(df, "columns", []):
+        return None
+    m = (message or "").lower()
+    if not any(w in m for w in _GROWTH_WORDS):
+        return None
+    cols = list(df.columns)
+
+    def _numeric(c):
+        return c in cols and pd.api.types.is_numeric_dtype(df[c])
+
+    # Group dimension: the model's group_by, else a non-numeric column the question
+    # names. Must exist and must not be the time axis.
+    group = None
+    for g in (spec.get("group_by") or []) if isinstance(spec, dict) else []:
+        if g in cols and g != time_col:
+            group = g
+            break
+    if group is None:
+        group = next((c for c in cols if c != time_col and not _numeric(c) and c.lower() in m), None)
+    if group is None:
+        return None
+
+    # Measure: a numeric column the question names, else the model's agg column,
+    # else the primary (a 'stock' measure, else the first numeric column).
+    measure = next((c for c in cols if _numeric(c) and c.lower() in m), None)
+    if measure is None and isinstance(spec, dict):
+        measure = next((c for c in (spec.get("agg") or {}) if _numeric(c)), None)
+    if measure is None:
+        measure = next((c for c, meas in (measures or {}).items() if meas == "stock" and _numeric(c)), None)
+    if measure is None:
+        measure = next((c for c in cols if _numeric(c)), None)
+    if measure is None or measure == group:
+        return None
+
+    try:
+        work = df[[group, time_col, measure]].copy()
+        work[measure] = pd.to_numeric(work[measure], errors="coerce")
+        parsed = pd.to_datetime(work[time_col], errors="coerce")
+        work["_t"] = parsed if parsed.notna().any() else work[time_col]
+        periods = sorted(work["_t"].dropna().unique())
+        if len(periods) < 2:
+            return None
+        first_p, last_p = periods[0], periods[-1]
+        # One value per (group, period): sum within the period (a snapshot level).
+        per = work.groupby([group, "_t"])[measure].sum()
+
+        def _clean_num(x):
+            x = round(float(x), 2)
+            return int(x) if x.is_integer() else x
+
+        rows = []
+        for g in pd.unique(work[group].dropna()):
+            try:
+                start = float(per.loc[(g, first_p)])
+                end = float(per.loc[(g, last_p)])
+            except KeyError:
+                continue  # group missing at an endpoint → its growth isn't defined
+            change = end - start
+            pct = (change / abs(start) * 100) if start else None
+            rows.append({group: g, "start": _clean_num(start), "end": _clean_num(end),
+                         "change": _clean_num(change),
+                         "change_pct": round(pct, 1) if pct is not None else None})
+        if not rows:
+            return None
+        # "Fastest" = growth RATE: rank by percent change. Groups with an undefined
+        # rate (a zero starting value) sink to the bottom.
+        rows.sort(key=lambda r: r["change_pct"] if r["change_pct"] is not None else float("-inf"),
+                  reverse=True)
+
+        def _label(p):
+            try:
+                return str(pd.Timestamp(p).date())
+            except Exception:
+                return str(p)
+
+        return {
+            "columns": [group, "start", "end", "change", "change_pct"],
+            "rows": rows, "row_count": len(rows),
+            "growth": {"group": group, "measure": measure,
+                       "first": _label(first_p), "last": _label(last_p)},
+        }
+    except Exception:
+        return None
+
+
 _CAPABILITIES = (
     "I'm this dashboard's assistant. I can:\n"
     "• **Answer questions about your data** — e.g. “highest revenue month”, “total units”, “revenue by region”.\n"
@@ -1176,15 +1273,21 @@ async def run_query_turn(
         return {"reply": result["error"], "spec": spec}
     # Deterministic stock-total: "total/current MRR" is ALWAYS the latest period,
     # never the model's aggregation choice (Phase 0c — fixes the $480,506 bug).
-    override = _stock_total_override(message, spec, df, measures, time_col)
-    if override:
-        result = override
+    # Deterministic period-over-period growth ("which plan grew fastest") — computed
+    # in pandas, ranked by change; the model only phrases it.
+    growth = _growth_override(message, spec, df, measures, time_col)
+    if growth:
+        result = growth
     else:
-        # Deterministic ambiguity gate: a total/count the model split by a
-        # dimension the user never named → collapse to the total + breakdown.
-        gated = _absent_group_total_gate(message, spec, result, df, time_col)
-        if gated:
-            result = gated
+        override = _stock_total_override(message, spec, df, measures, time_col)
+        if override:
+            result = override
+        else:
+            # Deterministic ambiguity gate: a total/count the model split by a
+            # dimension the user never named → collapse to the total + breakdown.
+            gated = _absent_group_total_gate(message, spec, result, df, time_col)
+            if gated:
+                result = gated
 
     warning, corrected = result.get("warning"), result.get("corrected")
     guard_note = ""
@@ -1195,15 +1298,37 @@ async def run_query_turn(
         guard_note += (f"\nThe data is {data_period}ly. If the question asks for a different time period "
                        "(weekly, daily, yearly), either show the conversion arithmetic explicitly or say it "
                        "can't be derived from this data. Do NOT relabel a number under a different period.")
-    base_prompt = (
-        "Answer in 1-2 short sentences using ONLY the computed result below. Lead with the number and "
-        "its unit/period. Never invent numbers. Do not cite internal column names like '<col>_sum' — name "
-        "the metric in plain words." + guard_note +
-        f"\n\nQuestion: {message}\nColumns: {result['columns']}\n"
-        f"Rows: {json.dumps(result['rows'][:20])}\n"
-        + (f"Corrected (use this) : {corrected}\n" if corrected is not None else "")
-        + "Answer:"
-    )
+    g = result.get("growth")
+    if g:
+        top = result["rows"][0]
+        # Direction honesty: the leash guards the numbers, but the WORDS must match
+        # the sign — never call a negative change "growth".
+        if top.get("change", 0) < 0:
+            dir_note = (f" IMPORTANT: the top row's change is NEGATIVE — nothing grew. Say plainly that "
+                        f"every {g['group']} declined over this range, and name the one that declined the LEAST.")
+        elif top.get("change", 0) == 0:
+            dir_note = f" IMPORTANT: no {g['group']} changed over this range — say it stayed flat."
+        else:
+            dir_note = ""
+        base_prompt = (
+            f"The user asked which {g['group']} grew fastest in {g['measure']}. Below is each "
+            f"{g['group']}'s {g['measure']} at the first period ({g['first']}) and the last period "
+            f"({g['last']}), with absolute and percent change, sorted by rate (highest first). "
+            "Answer in 1-2 sentences: name the top one and give its start→end value and the change "
+            "(both absolute and %). Use ONLY these numbers; never invent. Write plain numbers "
+            "(e.g. 15,000 and 87.5% — no LaTeX, no $ signs)." + dir_note +
+            f"\n\nQuestion: {message}\nRows: {json.dumps(result['rows'][:12])}\nAnswer:"
+        )
+    else:
+        base_prompt = (
+            "Answer in 1-2 short sentences using ONLY the computed result below. Lead with the number and "
+            "its unit/period. Never invent numbers. Do not cite internal column names like '<col>_sum' — name "
+            "the metric in plain words." + guard_note +
+            f"\n\nQuestion: {message}\nColumns: {result['columns']}\n"
+            f"Rows: {json.dumps(result['rows'][:20])}\n"
+            + (f"Corrected (use this) : {corrected}\n" if corrected is not None else "")
+            + "Answer:"
+        )
     ans = await query_model(get_fast_model(), [{"role": "user", "content": base_prompt}], max_tokens=300)
     reply = ((ans or {}).get("content") or "").strip() or _fallback_answer(result)
 

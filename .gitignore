@@ -35,3 +35,10 @@ UI_AUDIT.md
 FEATURE_AUDIT.md
 scratch_*
 E2E_REPORT.md
+
+# Agent/session working notes — kept LOCAL (invariants + plans), out of the public repo
+CLAUDE.md
+.claude/
+*_PLAN.md
+GO_LIVE*.md
+OVERNIGHT_PLAN.md

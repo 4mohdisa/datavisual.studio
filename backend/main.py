@@ -875,7 +875,12 @@ async def _process_upload(file: UploadFile) -> dict:
         result = analyse_file(save_path)
     except Exception as e:
         os.unlink(save_path)
-        raise HTTPException(status_code=422, detail=f"Could not read file: {e}")
+        if DEBUG:
+            print(f"upload parse error for {filename!r}: {e}")
+        raise HTTPException(status_code=422, detail=(
+            "Couldn't read that file. If it's a CSV, make sure every row has the same "
+            "number of columns as the header — a stray comma or a ragged row will break it. "
+            "For Excel or JSON, check the file isn't corrupt, then try again."))
 
     if result.get("error"):
         os.unlink(save_path)

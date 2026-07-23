@@ -130,6 +130,18 @@ def test_owner_share_link_opens_anonymously(client, upload_csv):
 
 # --- admin password gate ------------------------------------------------------
 
+def test_malformed_csv_gives_clean_message_not_raw_parser_error(client):
+    """A ragged CSV must fail with a clear, actionable message — never the raw
+    pandas tokenizer error ('Error tokenizing data. C error: …')."""
+    ragged = "a,b,c\n1,2\n3,4,5,6\n"
+    r = client.post("/api/upload", files={"file": ("bad.csv", ragged.encode(), "text/csv")})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"].lower()
+    for leak in ("tokenizing", "c error", "traceback", "expected 3 fields"):
+        assert leak not in detail, f"raw parser internal leaked to the user: {detail!r}"
+    assert ("csv" in detail or "row" in detail or "column" in detail), detail
+
+
 def test_admin_requires_password(client, monkeypatch):
     monkeypatch.setenv("ADMIN_PASSWORD", "s3cret")
     assert client.get("/api/admin/overview").status_code == 403
